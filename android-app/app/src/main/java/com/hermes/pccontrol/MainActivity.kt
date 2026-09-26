@@ -55,6 +55,10 @@ class MainActivity : ComponentActivity() {
         var isRefreshing by remember { mutableStateOf(false) }
         var statusMessage by remember { mutableStateOf<String?>(null) }
 
+        var isCheckingUpdate by remember { mutableStateOf(false) }
+        var isDownloadingUpdate by remember { mutableStateOf(false) }
+        var downloadProgress by remember { mutableStateOf(0f) }
+
         // Background poller
         LaunchedEffect(config) {
             while (true) {
@@ -175,6 +179,54 @@ class MainActivity : ComponentActivity() {
                             res.getOrNull()
                         } else {
                             "Помилка MikroTik: ${res.exceptionOrNull()?.message}"
+                        }
+                    }
+                },
+                isCheckingUpdate = isCheckingUpdate,
+                isDownloadingUpdate = isDownloadingUpdate,
+                downloadProgress = downloadProgress,
+                onTriggerOtaUpdate = {
+                    scope.launch {
+                        isCheckingUpdate = true
+                        statusMessage = "Перевірка оновлення на ПК..."
+                        val checkRes = com.hermes.pccontrol.network.OtaManager.checkUpdate(config)
+                        isCheckingUpdate = false
+
+                        if (checkRes.isSuccess) {
+                            val info = checkRes.getOrNull()!!
+                            val currentVersionCode = try {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                                    packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    packageManager.getPackageInfo(packageName, 0).versionCode
+                                }
+                            } catch (e: Exception) {
+                                1
+                            }
+
+                            if (info.versionCode > currentVersionCode) {
+                                statusMessage = "Знайдено оновлення ${info.versionName} (build ${info.versionCode})! Завантаження..."
+                                isDownloadingUpdate = true
+                                downloadProgress = 0f
+
+                                val dlRes = com.hermes.pccontrol.network.OtaManager.downloadAndInstallApk(
+                                    context = this@MainActivity,
+                                    config = config,
+                                    onProgress = { p -> downloadProgress = p }
+                                )
+                                isDownloadingUpdate = false
+
+                                if (dlRes.isSuccess) {
+                                    statusMessage = "Оновлення завантажено. Встановіть через системний діалог."
+                                } else {
+                                    statusMessage = "Помилка оновлення: ${dlRes.exceptionOrNull()?.message}"
+                                }
+                            } else {
+                                statusMessage = "Встановлено актуальну версію (${info.versionName}, build $currentVersionCode). Оновлень немає."
+                            }
+                        } else {
+                            statusMessage = "Помилка перевірки оновлень: ${checkRes.exceptionOrNull()?.message}"
                         }
                     }
                 }

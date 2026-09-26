@@ -32,6 +32,10 @@ fun DashboardScreen(
     onHibernate: () -> Unit,
     onSendLocalWol: () -> Unit,
     onSendMikrotikWol: () -> Unit,
+    isCheckingUpdate: Boolean = false,
+    isDownloadingUpdate: Boolean = false,
+    downloadProgress: Float = 0f,
+    onTriggerOtaUpdate: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showHibernateDialog by remember { mutableStateOf(false) }
@@ -389,6 +393,67 @@ fun DashboardScreen(
                     modifier = Modifier.weight(1f)
                 )
             }
+        }
+
+        // --- Card 5: OTA Updates ---
+        GlassCard {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SystemUpdate,
+                        contentDescription = null,
+                        tint = AccentCyan,
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "OTA Оновлення додатку",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = "Поточна версія: v1.1.0",
+                            fontSize = 13.sp,
+                            color = TextSecondary
+                        )
+                    }
+                }
+            }
+
+            if (isDownloadingUpdate) {
+                Spacer(modifier = Modifier.height(14.dp))
+                LinearProgressIndicator(
+                    progress = { downloadProgress },
+                    modifier = Modifier.fillMaxWidth().height(8.dp),
+                    color = AccentCyan,
+                    trackColor = DarkSurfaceElevated,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Завантаження APK: ${(downloadProgress * 100).toInt()}%",
+                    color = AccentCyan,
+                    fontSize = 12.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            HeroActionButton(
+                text = if (isDownloadingUpdate) "Завантаження оновлення..." else if (isCheckingUpdate) "Перевірка оновлення..." else "Оновити додаток з ПК (OTA)",
+                icon = Icons.Default.Download,
+                containerColor = AccentCyan,
+                contentColor = Color.Black,
+                enabled = isOnline && !isDownloadingUpdate && !isCheckingUpdate,
+                onClick = onTriggerOtaUpdate
+            )
         }
     }
 }

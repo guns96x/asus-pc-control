@@ -142,11 +142,21 @@ func main() {
 	http.HandleFunc("/api/keyboard/toggle", authMiddleware(handleKeyboardToggle))
 	http.HandleFunc("/api/power/hibernate", authMiddleware(handleHibernate))
 
-	// Direct mobile download route
+	// Direct mobile download and OTA routes
 	http.HandleFunc("/app.apk", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/vnd.android.package-archive")
 		w.Header().Set("Content-Disposition", "attachment; filename=\"AsusControl.apk\"")
 		http.ServeFile(w, r, "AsusControl.apk")
+	})
+
+	http.HandleFunc("/api/app/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"version_code":  2,
+			"version_name":  "1.1.0",
+			"download_url":  "/app.apk",
+			"release_notes": "Вбудовано систему OTA оновлення в один клік",
+		})
 	})
 
 	addr := fmt.Sprintf("0.0.0.0:%d", config.Port)
