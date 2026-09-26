@@ -4,7 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 
 data class AppConfig(
-    val pcHost: String = "100.82.252.86",
+    val pcHost: String = "192.168.80.200",
+    val pcFallbackHost: String = "100.82.252.86",
     val pcPort: Int = 8765,
     val authToken: String = "3f0f6c5206aafe05231c8c97034cd2cb",
     val pcMac: String = "E8:9C:25:4C:4C:CA",
@@ -21,7 +22,8 @@ class AppPreferences(context: Context) {
 
     fun loadConfig(): AppConfig {
         return AppConfig(
-            pcHost = prefs.getString("pc_host", "100.82.252.86") ?: "100.82.252.86",
+            pcHost = prefs.getString("pc_host", "192.168.80.200") ?: "192.168.80.200",
+            pcFallbackHost = prefs.getString("pc_fallback_host", "100.82.252.86") ?: "100.82.252.86",
             pcPort = prefs.getInt("pc_port", 8765),
             authToken = prefs.getString("auth_token", "3f0f6c5206aafe05231c8c97034cd2cb") ?: "3f0f6c5206aafe05231c8c97034cd2cb",
             pcMac = prefs.getString("pc_mac", "E8:9C:25:4C:4C:CA") ?: "E8:9C:25:4C:4C:CA",
@@ -37,6 +39,7 @@ class AppPreferences(context: Context) {
     fun saveConfig(config: AppConfig) {
         prefs.edit()
             .putString("pc_host", config.pcHost.trim())
+            .putString("pc_fallback_host", config.pcFallbackHost.trim())
             .putInt("pc_port", config.pcPort)
             .putString("auth_token", config.authToken.trim())
             .putString("pc_mac", config.pcMac.trim().uppercase())

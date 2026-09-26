@@ -27,6 +27,7 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     var pcHost by remember { mutableStateOf(currentConfig.pcHost) }
+    var pcFallbackHost by remember { mutableStateOf(currentConfig.pcFallbackHost) }
     var pcPort by remember { mutableStateOf(currentConfig.pcPort.toString()) }
     var authToken by remember { mutableStateOf(currentConfig.authToken) }
     var pcMac by remember { mutableStateOf(currentConfig.pcMac) }
@@ -75,6 +76,7 @@ fun SettingsScreen(
                 onClick = {
                     val newCfg = AppConfig(
                         pcHost = pcHost,
+                        pcFallbackHost = pcFallbackHost,
                         pcPort = pcPort.toIntOrNull() ?: 8765,
                         authToken = authToken,
                         pcMac = pcMac,
@@ -110,7 +112,16 @@ fun SettingsScreen(
             OutlinedTextField(
                 value = pcHost,
                 onValueChange = { pcHost = it },
-                label = { Text("IP адреса ПК (LAN або Tailscale)") },
+                label = { Text("Основна IP ПК (LAN, напр. 192.168.80.200)") },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = pcFallbackHost,
+                onValueChange = { pcFallbackHost = it },
+                label = { Text("Резервна IP (Tailscale, напр. 100.82.252.86)") },
                 modifier = Modifier.fillMaxWidth()
             )
 
@@ -221,6 +232,7 @@ fun SettingsScreen(
             onClick = {
                 val newCfg = AppConfig(
                     pcHost = pcHost,
+                    pcFallbackHost = pcFallbackHost,
                     pcPort = pcPort.toIntOrNull() ?: 8765,
                     authToken = authToken,
                     pcMac = pcMac,
