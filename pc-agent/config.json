@@ -1,0 +1,5 @@
+{
+  "port": 8765,
+  "auth_token": "3f0f6c5206aafe05231c8c97034cd2cb",
+  "enable_ddc_ci": true
+}

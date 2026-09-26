@@ -1,0 +1,11 @@
+# Gradle & Android
+.gradle/
+build/
+app/build/
+*.iml
+.idea/
+local.properties
+
+# Logs
+*.log
+agent.log
