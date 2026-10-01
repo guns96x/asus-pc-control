@@ -188,7 +188,7 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = mikrotikInterface,
                     onValueChange = { mikrotikInterface = it },
-                    label = { Text("Інтерфейс (bridge)") },
+                    label = { Text("Інтерфейс LAN (bridge-LAN)") },
                     modifier = Modifier.weight(1f)
                 )
             }

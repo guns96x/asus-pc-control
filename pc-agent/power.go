@@ -9,10 +9,6 @@ import (
 	"unsafe"
 )
 
-var (
-	procGetSystemPowerStatus = kernel32.NewProc("GetSystemPowerStatus")
-)
-
 type SYSTEM_POWER_STATUS struct {
 	ACLineStatus        byte
 	BatteryFlag         byte
@@ -23,13 +19,14 @@ type SYSTEM_POWER_STATUS struct {
 }
 
 type SystemInfo struct {
-	Hostname        string `json:"hostname"`
-	IsACPlugged     bool   `json:"is_ac_plugged"`
-	BatteryPercent  int    `json:"battery_percent"`
-	IsCharging      bool   `json:"is_charging"`
-	MonitorSleeping bool   `json:"monitor_sleeping"`
-	KeyboardLevel   int    `json:"keyboard_level"`
-	Timestamp       int64  `json:"timestamp"`
+	Hostname             string `json:"hostname"`
+	IsACPlugged          bool   `json:"is_ac_plugged"`
+	BatteryPercent       int    `json:"battery_percent"`
+	IsCharging           bool   `json:"is_charging"`
+	MonitorSleeping      bool   `json:"monitor_sleeping"`
+	MonitorStateVerified bool   `json:"monitor_state_verified"`
+	KeyboardLevel        int    `json:"keyboard_level"`
+	Timestamp            int64  `json:"timestamp"`
 }
 
 func GetSystemStatus() SystemInfo {

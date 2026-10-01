@@ -1,119 +1,126 @@
 package main
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
-	"log"
-	"os/exec"
-	"strconv"
-	"strings"
 	"sync"
+	"syscall"
+	"unsafe"
 )
 
-type KeyboardState struct {
-	mu            sync.Mutex
-	Brightness    int // 0 to 3
-	IsInitialized bool
+const ASUS_KBD_BACKLIGHT_DEVID uint32 = 0x00050021
+const asusStatusLED uint32 = 0x000600C2
+
+var keyboardMu sync.Mutex
+var deviceRead = readAsusDevice
+var deviceWrite = writeAsusDevice
+
+// ATKACPI protocol: method, argument size, device id, control value (little endian).
+func asusCall(method, device, value uint32) (uint32, error) {
+	path, _ := syscall.UTF16PtrFromString(`\\.\ATKACPI`)
+	h, err := syscall.CreateFile(path, syscall.GENERIC_READ|syscall.GENERIC_WRITE,
+		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE, nil, syscall.OPEN_EXISTING, 0, 0)
+	if err != nil {
+		return 0, fmt.Errorf("доступ до ASUS System Control Interface: %w", err)
+	}
+	defer syscall.CloseHandle(h)
+	input, output := make([]byte, 16), make([]byte, 16)
+	binary.LittleEndian.PutUint32(input, method)
+	binary.LittleEndian.PutUint32(input[4:], 8)
+	binary.LittleEndian.PutUint32(input[8:], device)
+	binary.LittleEndian.PutUint32(input[12:], value)
+	var returned uint32
+	ok, _, callErr := kernel32.NewProc("DeviceIoControl").Call(uintptr(h), 0x0022240C,
+		uintptr(unsafe.Pointer(&input[0])), uintptr(len(input)), uintptr(unsafe.Pointer(&output[0])),
+		uintptr(len(output)), uintptr(unsafe.Pointer(&returned)), 0)
+	if ok == 0 {
+		return 0, fmt.Errorf("ASUS ACPI: %w", callErr)
+	}
+	if returned < 4 {
+		return 0, errors.New("ASUS ACPI повернув неповну відповідь")
+	}
+	return binary.LittleEndian.Uint32(output), nil
 }
-
-var currentKeyboardState KeyboardState
-
-const (
-	ASUS_KBD_BACKLIGHT_DEVID = 0x00050021
-)
-
-func SetAsusKeyboardBrightness(level int) error {
-	if level < 0 {
-		level = 0
+func readAsusDevice(device uint32) (uint32, error) { return asusCall(0x53545344, device, 0) }
+func writeAsusDevice(device, value uint32) error {
+	result, err := asusCall(0x53564544, device, value)
+	if err != nil {
+		return err
 	}
-	if level > 3 {
-		level = 3
+	if result != 1 {
+		return fmt.Errorf("ASUS відхилив команду (результат %d)", result)
 	}
-
-	currentKeyboardState.mu.Lock()
-	currentKeyboardState.Brightness = level
-	currentKeyboardState.IsInitialized = true
-	currentKeyboardState.mu.Unlock()
-
-	log.Printf("[Keyboard] Setting brightness to %d...", level)
-
-	// Invoke Asus WMI method DEVS(0x00050021, level) via powershell
-	psCmd := fmt.Sprintf(`
-try {
-    $wmi = Get-CimInstance -Namespace root\wmi -ClassName AsusAtkWmi_WMNB -ErrorAction Stop
-    $argsDevs = @{
-        Device_Arg = [uint32]0x%X
-        Control_Status = [uint32]%d
-    }
-    $res = Invoke-CimMethod -InputObject $wmi -MethodName DEVS -Arguments $argsDevs -ErrorAction Stop
-    Write-Output "OK:$($res.String)"
-} catch {
-    Write-Output "ERR:$($_.Exception.Message)"
-}
-`, ASUS_KBD_BACKLIGHT_DEVID, level)
-
-	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
-	out, err := cmd.CombinedOutput()
-	outputStr := strings.TrimSpace(string(out))
-
-	if err != nil || strings.HasPrefix(outputStr, "ERR:") {
-		log.Printf("[Keyboard] WMI set returned notice: %s. State tracked internally.", outputStr)
-		// We still keep the internal state so the mobile client reflects the requested state
-		return nil
-	}
-
-	log.Printf("[Keyboard] WMI set successful: %s", outputStr)
 	return nil
 }
-
-func GetAsusKeyboardBrightness() int {
-	currentKeyboardState.mu.Lock()
-	defer currentKeyboardState.mu.Unlock()
-
-	if !currentKeyboardState.IsInitialized {
-		// Attempt initial query
-		psCmd := fmt.Sprintf(`
-try {
-    $wmi = Get-CimInstance -Namespace root\wmi -ClassName AsusAtkWmi_WMNB -ErrorAction Stop
-    $argsDsts = @{ Device_Arg = [uint32]0x%X }
-    $res = Invoke-CimMethod -InputObject $wmi -MethodName DSTS -Arguments $argsDsts -ErrorAction Stop
-    Write-Output "VAL:$($res.Device_Status)"
-} catch {
-    Write-Output "ERR"
-}
-`, ASUS_KBD_BACKLIGHT_DEVID)
-
-		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
-		out, err := cmd.CombinedOutput()
-		outputStr := strings.TrimSpace(string(out))
-		if err == nil && strings.HasPrefix(outputStr, "VAL:") {
-			valStr := strings.TrimPrefix(outputStr, "VAL:")
-			if v, err := strconv.Atoi(valStr); err == nil {
-				// Lowest 3 bits usually represent brightness level
-				level := v & 0x07
-				if level > 3 {
-					level = 3
-				}
-				currentKeyboardState.Brightness = level
-				currentKeyboardState.IsInitialized = true
-				return level
-			}
-		}
-
-		currentKeyboardState.Brightness = 3 // Default full brightness if unknown
-		currentKeyboardState.IsInitialized = true
+func devicePresent(raw uint32) bool { return int32(raw) >= 0 && raw&0x10000 != 0 && raw&0x80000 == 0 }
+func decodeKeyboardLevel(raw uint32) (int, error) {
+	if !devicePresent(raw) {
+		return -1, errors.New("Драйвер ASUS не підтримує керування підсвіткою клавіатури")
 	}
-
-	return currentKeyboardState.Brightness
+	level := int(raw & 0x7F)
+	if level > 3 {
+		return -1, fmt.Errorf("Невідома яскравість клавіатури: %d", level)
+	}
+	return level, nil
 }
-
-func ToggleAsusKeyboardBacklight() int {
-	current := GetAsusKeyboardBrightness()
-	var next int
-	if current > 0 {
-		next = 0
-	} else {
+func readKeyboardLevel() (int, error) {
+	raw, err := deviceRead(ASUS_KBD_BACKLIGHT_DEVID)
+	if err != nil {
+		return -1, err
+	}
+	return decodeKeyboardLevel(raw)
+}
+func ReadAsusKeyboardBrightness() (int, error) {
+	keyboardMu.Lock()
+	defer keyboardMu.Unlock()
+	return readKeyboardLevel()
+}
+func GetAsusKeyboardBrightness() int {
+	level, err := ReadAsusKeyboardBrightness()
+	if err != nil {
+		return -1
+	}
+	return level
+}
+func setKeyboardLevel(level int) error {
+	if level < 0 || level > 3 {
+		return errors.New("Яскравість клавіатури має бути від 0 до 3")
+	}
+	if _, err := readKeyboardLevel(); err != nil {
+		return err
+	}
+	// TUF firmware requires bit 7 when setting brightness, including level zero.
+	if err := deviceWrite(ASUS_KBD_BACKLIGHT_DEVID, 0x80|uint32(level)); err != nil {
+		return err
+	}
+	actual, err := readKeyboardLevel()
+	if err != nil {
+		return fmt.Errorf("Не вдалося перевірити підсвітку після команди: %w", err)
+	}
+	if actual != level {
+		return fmt.Errorf("ASUS повернув яскравість %d замість %d", actual, level)
+	}
+	return nil
+}
+func SetAsusKeyboardBrightness(level int) error {
+	keyboardMu.Lock()
+	defer keyboardMu.Unlock()
+	return setKeyboardLevel(level)
+}
+func ToggleAsusKeyboardBacklight() (int, error) {
+	keyboardMu.Lock()
+	defer keyboardMu.Unlock()
+	current, err := readKeyboardLevel()
+	if err != nil {
+		return -1, err
+	}
+	next := 0
+	if current == 0 {
 		next = 3
 	}
-	_ = SetAsusKeyboardBrightness(next)
-	return next
+	if err := setKeyboardLevel(next); err != nil {
+		return -1, err
+	}
+	return next, nil
 }

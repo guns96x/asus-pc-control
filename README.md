@@ -1,5 +1,13 @@
 # ASUS PC Remote Control (Android & Tailscale / LAN)
 
+Current build: **1.1.3 (code 5)**, package `com.hermes.pccontrol`. The APK keeps the existing signing certificate.
+
+Download from ASUS while Tailscale is connected: http://100.82.252.86:8765/app.apk
+
+The Windows agent runs from `pc-agent/asus-pc-agent.exe` and loads config/APK beside the executable. Current-user autostart is registered as `AsusPcControlAgent` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+
+Router deployment status: Tailscale container is deployed and running on MikroTik hAP ac^2, subnet route `192.168.80.1/32` is approved, and HTTPS REST Wake-on-LAN is verified. Details in [MikroTik deployment doc](docs/mikrotik-tailscale-deployed-2026-10-01.md).
+
 Повна система дистанційного керування ноутбуком **ASUS TUF Gaming F15 (FX507ZC4)** з Android-смартфона через локальну мережу (Wi-Fi) та **Tailscale** з підтримкою **MikroTik RouterOS**.
 
 ---

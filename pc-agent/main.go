@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -47,58 +49,111 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleMonitorSleep(w http.ResponseWriter, r *http.Request) {
-	SleepDisplays(config.EnableDDCCI)
+	if !requirePost(w, r) {
+		return
+	}
+	if err := SleepDisplays(config.EnableDDCCI); err != nil {
+		apiError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "monitor_sleeping": true})
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "monitor_sleeping": true, "monitor_state_verified": false})
 }
 
 func handleMonitorWake(w http.ResponseWriter, r *http.Request) {
-	WakeDisplays(config.EnableDDCCI)
+	if !requirePost(w, r) {
+		return
+	}
+	if err := WakeDisplays(config.EnableDDCCI); err != nil {
+		apiError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "monitor_sleeping": false})
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "monitor_sleeping": false, "monitor_state_verified": false})
 }
 
 func handleMonitorToggle(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
 	if IsMonitorSleeping() {
-		WakeDisplays(config.EnableDDCCI)
+		if err := WakeDisplays(config.EnableDDCCI); err != nil {
+			apiError(w, http.StatusServiceUnavailable, err)
+			return
+		}
 	} else {
-		SleepDisplays(config.EnableDDCCI)
+		if err := SleepDisplays(config.EnableDDCCI); err != nil {
+			apiError(w, http.StatusServiceUnavailable, err)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "monitor_sleeping": IsMonitorSleeping()})
 }
 
 func handleKeyboardGet(w http.ResponseWriter, r *http.Request) {
-	level := GetAsusKeyboardBrightness()
+	level, err := ReadAsusKeyboardBrightness()
+	if err != nil {
+		apiError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "level": level})
 }
 
 func handleKeyboardSet(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
 	levelStr := r.URL.Query().Get("level")
 	if levelStr == "" {
 		var req struct {
-			Level int `json:"level"`
+			Level *int `json:"level"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
-			levelStr = strconv.Itoa(req.Level)
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Level != nil {
+			levelStr = strconv.Itoa(*req.Level)
 		}
 	}
 
 	level, err := strconv.Atoi(levelStr)
-	if err != nil {
-		level = 3
+	if err != nil || level < 0 || level > 3 {
+		apiError(w, http.StatusBadRequest, fmt.Errorf("Яскравість клавіатури має бути цілим числом від 0 до 3"))
+		return
 	}
-
-	_ = SetAsusKeyboardBrightness(level)
+	if err := SetAsusKeyboardBrightness(level); err != nil {
+		apiError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "level": level})
 }
 
 func handleKeyboardToggle(w http.ResponseWriter, r *http.Request) {
-	nextLevel := ToggleAsusKeyboardBacklight()
+	if !requirePost(w, r) {
+		return
+	}
+	nextLevel, err := ToggleAsusKeyboardBacklight()
+	if err != nil {
+		apiError(w, http.StatusServiceUnavailable, err)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "level": nextLevel})
+}
+
+func apiError(w http.ResponseWriter, code int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": false, "error": err.Error()})
+}
+
+func requirePost(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodPost {
+		return true
+	}
+	w.Header().Set("Allow", "POST")
+	apiError(w, http.StatusMethodNotAllowed, methodError)
+	return false
 }
 
 func handleHibernate(w http.ResponseWriter, r *http.Request) {
@@ -122,12 +177,19 @@ func printLocalIPs(port int) {
 			}
 		}
 	}
-	fmt.Println(" Auth Token:", config.AuthToken)
+	fmt.Println(" Authentication enabled:", config.AuthToken != "")
 	fmt.Println("==================================================")
 }
 
 func main() {
-	var err error
+	// Scheduled tasks may start in System32; resolve config and APK beside the executable.
+	exe, err := os.Executable()
+	if err != nil {
+		log.Fatalf("Failed to locate executable: %v", err)
+	}
+	if err := os.Chdir(filepath.Dir(exe)); err != nil {
+		log.Fatalf("Failed to select agent directory: %v", err)
+	}
 	config, err = loadConfig("config.json")
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
@@ -140,6 +202,12 @@ func main() {
 	http.HandleFunc("/api/keyboard", authMiddleware(handleKeyboardGet))
 	http.HandleFunc("/api/keyboard/level", authMiddleware(handleKeyboardSet))
 	http.HandleFunc("/api/keyboard/toggle", authMiddleware(handleKeyboardToggle))
+	http.HandleFunc("/api/lighting", authMiddleware(handleLighting))
+	http.HandleFunc("/api/lighting/dark", authMiddleware(handleDarkMode))
+	http.HandleFunc("/api/monitor", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(ProbeDisplays())
+	}))
 	http.HandleFunc("/api/power/hibernate", authMiddleware(handleHibernate))
 
 	// Direct mobile download and OTA routes
@@ -152,10 +220,10 @@ func main() {
 	http.HandleFunc("/api/app/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version_code":  2,
-			"version_name":  "1.1.0",
+			"version_code":  5,
+			"version_name":  "1.1.3",
 			"download_url":  "/app.apk",
-			"release_notes": "Вбудовано систему OTA оновлення в один клік",
+			"release_notes": "Керування клавіатурою через ASUS ACPI, екранами та темний режим",
 		})
 	})
 

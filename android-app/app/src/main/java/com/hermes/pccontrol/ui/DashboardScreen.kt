@@ -14,6 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hermes.pccontrol.data.AppConfig
+import com.hermes.pccontrol.network.LightingCapabilities
 import com.hermes.pccontrol.network.PcStatus
 
 @Composable
@@ -36,6 +37,8 @@ fun DashboardScreen(
     isDownloadingUpdate: Boolean = false,
     downloadProgress: Float = 0f,
     onTriggerOtaUpdate: () -> Unit = {},
+    lightingCapabilities: LightingCapabilities? = null,
+    onDarkMode: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showHibernateDialog by remember { mutableStateOf(false) }
@@ -155,6 +158,36 @@ fun DashboardScreen(
             }
         }
 
+        // --- Capability Note ---
+        val capabilityNote = lightingCapabilities?.message
+        if (!capabilityNote.isNullOrBlank()) {
+            Surface(
+                color = DarkSurfaceElevated,
+                border = androidx.compose.foundation.BorderStroke(1.dp, DarkBorder),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = AccentCyan,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = capabilityNote,
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                }
+            }
+        }
+
         // --- System Telemetry Card ---
         if (isOnline && pcStatus != null) {
             GlassCard {
@@ -189,8 +222,8 @@ fun DashboardScreen(
                     }
 
                     StatusBadge(
-                        text = if (pcStatus.monitorSleeping) "Екран спить" else "Екран активний",
-                        dotColor = if (pcStatus.monitorSleeping) AccentAmber else AccentEmerald
+                        text = if (!pcStatus.monitorStateVerified) "Стан екранів не підтверджено" else if (pcStatus.monitorSleeping) "Екран спить" else "Екран активний",
+                        dotColor = if (!pcStatus.monitorStateVerified) TextMuted else if (pcStatus.monitorSleeping) AccentAmber else AccentEmerald
                     )
                 }
             }
@@ -253,6 +286,9 @@ fun DashboardScreen(
 
         // --- Card 2: Keyboard Backlight ---
         GlassCard {
+            val rawKbdLevel = pcStatus?.keyboardLevel ?: -1
+            val isKbdAvailable = isOnline && rawKbdLevel >= 0
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -276,7 +312,7 @@ fun DashboardScreen(
                             color = TextPrimary
                         )
                         Text(
-                            text = "ASUS ACPI WMI контролер (0-3)",
+                            text = if (isOnline && rawKbdLevel < 0) "Стан підсвітки недоступний" else "Яскравість клавіатури: 0–3",
                             fontSize = 13.sp,
                             color = TextSecondary
                         )
@@ -285,12 +321,12 @@ fun DashboardScreen(
 
                 IconButton(
                     onClick = onToggleKeyboard,
-                    enabled = isOnline
+                    enabled = isKbdAvailable
                 ) {
                     Icon(
                         imageVector = Icons.Default.ToggleOn,
                         contentDescription = "Перемкнути",
-                        tint = if (isOnline) AccentIndigo else TextMuted,
+                        tint = if (isKbdAvailable) AccentIndigo else TextMuted,
                         modifier = Modifier.size(32.dp)
                     )
                 }
@@ -298,10 +334,24 @@ fun DashboardScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            val currentKbdLevel = pcStatus?.keyboardLevel ?: 0
             KeyboardLevelSelector(
-                currentLevel = currentKbdLevel,
-                onSelectLevel = { lvl -> onSetKeyboardLevel(lvl) }
+                currentLevel = if (rawKbdLevel >= 0) rawKbdLevel else -1,
+                onSelectLevel = { lvl ->
+                    if (isKbdAvailable) {
+                        onSetKeyboardLevel(lvl)
+                    }
+                }
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            HeroActionButton(
+                text = "Темний режим",
+                icon = Icons.Default.NightlightRound,
+                containerColor = AccentIndigo,
+                contentColor = Color.White,
+                enabled = isOnline,
+                onClick = onDarkMode
             )
         }
 

@@ -1,7 +1,10 @@
 package main
 
 import (
-	"log"
+	"errors"
+	"fmt"
+	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -9,107 +12,185 @@ import (
 )
 
 var (
-	user32   = syscall.NewLazyDLL("user32.dll")
-	kernel32 = syscall.NewLazyDLL("kernel32.dll")
-	dxva2    = syscall.NewLazyDLL("dxva2.dll")
-
-	procSendMessage               = user32.NewProc("SendMessageW")
-	procEnumDisplayMonitors       = user32.NewProc("EnumDisplayMonitors")
-	procMouseEvent                = user32.NewProc("mouse_event")
-	procSetThreadExecutionState   = kernel32.NewProc("SetThreadExecutionState")
-	procGetNumberOfPhysMonitors   = dxva2.NewProc("GetNumberOfPhysicalMonitorsFromHMONITOR")
-	procGetPhysicalMonitors       = dxva2.NewProc("GetPhysicalMonitorsFromHMONITOR")
-	procDestroyPhysicalMonitors   = dxva2.NewProc("DestroyPhysicalMonitors")
-	procSetVCPFeature             = dxva2.NewProc("SetVCPFeature")
-	procGetVCPFeature             = dxva2.NewProc("GetVCPFeatureAndVCPFeatureReply")
+	user32                   = syscall.NewLazyDLL("user32.dll")
+	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
+	dxva2                    = syscall.NewLazyDLL("dxva2.dll")
+	procGetSystemPowerStatus = kernel32.NewProc("GetSystemPowerStatus")
 )
 
 const (
-	HWND_BROADCAST     = 0xFFFF
-	WM_SYSCOMMAND      = 0x0112
-	SC_MONITORPOWER    = 0xF170
-	MONITOR_OFF        = 2
-	MONITOR_ON         = -1
-	MOUSEEVENTF_MOVE   = 0x0001
-	ES_SYSTEM_REQUIRED = 0x00000001
-	ES_DISPLAY_REQUIRED= 0x00000002
+	HWND_BROADCAST  = 0xFFFF
+	WM_SYSCOMMAND   = 0x0112
+	SC_MONITORPOWER = 0xF170
 )
 
 type PhysicalMonitor struct {
 	HPhysicalMonitor syscall.Handle
 	Description      [128]uint16
 }
-
-type MonitorState struct {
-	mu        sync.Mutex
-	IsSleeping bool
+type DisplayInfo struct {
+	Name           string `json:"name"`
+	Capabilities   string `json:"capabilities,omitempty"`
+	PowerSupported bool   `json:"power_supported"`
+	Power          uint32 `json:"power"`
+	Error          string `json:"error,omitempty"`
 }
 
-var currentMonitorState MonitorState
+var monitorMu sync.Mutex
+var requestedMonitorSleeping bool
+var activeConsoleSession = consoleSessionActive
+var ddcPowerDisplays = map[string]bool{}
+var currentMonitorVisitor func(uintptr)
 
-func setDDCVCP(vcpCode byte, value uint32) {
-	cb := syscall.NewCallback(func(hMonitor, hdc, lprc, data uintptr) uintptr {
+// A single callback avoids leaking one syscall callback allocation on each API call.
+var monitorCallback = syscall.NewCallback(func(h, a, b, c uintptr) uintptr {
+	if currentMonitorVisitor != nil {
+		currentMonitorVisitor(h)
+	}
+	return 1
+})
+
+func visitPhysicalMonitors(visit func(PhysicalMonitor)) error {
+	var failures []string
+	currentMonitorVisitor = func(h uintptr) {
 		var count uint32
-		r, _, _ := procGetNumberOfPhysMonitors.Call(hMonitor, uintptr(unsafe.Pointer(&count)))
-		if r == 0 || count == 0 {
-			return 1
+		ok, _, err := dxva2.NewProc("GetNumberOfPhysicalMonitorsFromHMONITOR").Call(h, uintptr(unsafe.Pointer(&count)))
+		if ok == 0 {
+			failures = append(failures, err.Error())
+			return
 		}
-
+		if count == 0 {
+			return
+		}
+		if count > 64 {
+			failures = append(failures, "Некоректна кількість фізичних моніторів")
+			return
+		}
 		monitors := make([]PhysicalMonitor, count)
-		r, _, _ = procGetPhysicalMonitors.Call(hMonitor, uintptr(count), uintptr(unsafe.Pointer(&monitors[0])))
-		if r != 0 {
-			for _, pm := range monitors {
-				procSetVCPFeature.Call(uintptr(pm.HPhysicalMonitor), uintptr(vcpCode), uintptr(value))
-			}
-			procDestroyPhysicalMonitors.Call(uintptr(count), uintptr(unsafe.Pointer(&monitors[0])))
+		ok, _, err = dxva2.NewProc("GetPhysicalMonitorsFromHMONITOR").Call(h, uintptr(count), uintptr(unsafe.Pointer(&monitors[0])))
+		if ok == 0 {
+			failures = append(failures, err.Error())
+			return
 		}
-		return 1
+		defer dxva2.NewProc("DestroyPhysicalMonitors").Call(uintptr(count), uintptr(unsafe.Pointer(&monitors[0])))
+		for _, m := range monitors {
+			visit(m)
+		}
+	}
+	defer func() { currentMonitorVisitor = nil }()
+	ok, _, err := user32.NewProc("EnumDisplayMonitors").Call(0, 0, monitorCallback, 0)
+	if ok == 0 {
+		return fmt.Errorf("Перелік екранів недоступний: %w", err)
+	}
+	if len(failures) > 0 {
+		return errors.New(strings.Join(failures, "; "))
+	}
+	return nil
+}
+func readVCP(m PhysicalMonitor, code byte) (uint32, error) {
+	var kind, current, max uint32
+	ok, _, err := dxva2.NewProc("GetVCPFeatureAndVCPFeatureReply").Call(uintptr(m.HPhysicalMonitor), uintptr(code), uintptr(unsafe.Pointer(&kind)), uintptr(unsafe.Pointer(&current)), uintptr(unsafe.Pointer(&max)))
+	if ok == 0 {
+		return 0, err
+	}
+	return current, nil
+}
+func ProbeDisplays() []DisplayInfo {
+	monitorMu.Lock()
+	defer monitorMu.Unlock()
+	info := []DisplayInfo{}
+	err := visitPhysicalMonitors(func(m PhysicalMonitor) {
+		entry := DisplayInfo{Name: syscall.UTF16ToString(m.Description[:])}
+		power, e := readVCP(m, 0xD6)
+		entry.Power = power
+		entry.PowerSupported = e == nil
+		var length uint32
+		ok, _, _ := dxva2.NewProc("GetCapabilitiesStringLength").Call(uintptr(m.HPhysicalMonitor), uintptr(unsafe.Pointer(&length)))
+		if ok != 0 && length > 0 && length < 65536 {
+			buf := make([]byte, length)
+			ok, _, _ = dxva2.NewProc("CapabilitiesRequestAndCapabilitiesReply").Call(uintptr(m.HPhysicalMonitor), uintptr(unsafe.Pointer(&buf[0])), uintptr(length))
+			if ok != 0 {
+				entry.Capabilities = strings.TrimRight(string(buf), "\x00")
+			}
+		}
+		if e != nil {
+			entry.Error = e.Error()
+		}
+		info = append(info, entry)
 	})
-
-	procEnumDisplayMonitors.Call(0, 0, cb, 0)
-}
-
-func SleepDisplays(useDdc bool) {
-	currentMonitorState.mu.Lock()
-	currentMonitorState.IsSleeping = true
-	currentMonitorState.mu.Unlock()
-
-	log.Println("[Monitor] Sending display sleep signal (SC_MONITORPOWER 2)...")
-	procSendMessage.Call(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, MONITOR_OFF)
-
-	if useDdc {
-		log.Println("[Monitor] Sending DDC/CI Power Off (VCP 0xD6 = 4)...")
-		setDDCVCP(0xD6, 4)
+	if len(info) == 0 {
+		message := "Фізичні монітори недоступні; увійдіть у Windows на ноуті без RDP"
+		if err != nil {
+			message += " (" + err.Error() + ")"
+		}
+		info = append(info, DisplayInfo{Name: "Windows display session", Error: message})
 	}
+	return info
 }
-
-func WakeDisplays(useDdc bool) {
-	currentMonitorState.mu.Lock()
-	currentMonitorState.IsSleeping = false
-	currentMonitorState.mu.Unlock()
-
-	log.Println("[Monitor] Waking displays...")
-
-	// 1. Thread execution state
-	procSetThreadExecutionState.Call(ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
-
-	// 2. SysCommand On (-1 = 0xFFFFFFFF)
-	procSendMessage.Call(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, ^uintptr(0))
-
-	// 3. Mouse nudge
-	procMouseEvent.Call(MOUSEEVENTF_MOVE, 1, 0, 0, 0)
-	time.Sleep(20 * time.Millisecond)
-	procMouseEvent.Call(MOUSEEVENTF_MOVE, ^uintptr(0), 0, 0, 0) // -1 relative move
-
-	// 4. DDC/CI Wake
-	if useDdc {
-		log.Println("[Monitor] Sending DDC/CI Power On (VCP 0xD6 = 1)...")
-		setDDCVCP(0xD6, 1)
+func consoleSessionActive() bool {
+	var session uint32
+	pid, _, _ := kernel32.NewProc("GetCurrentProcessId").Call()
+	ok, _, _ := kernel32.NewProc("ProcessIdToSessionId").Call(pid, uintptr(unsafe.Pointer(&session)))
+	console, _, _ := kernel32.NewProc("WTSGetActiveConsoleSessionId").Call()
+	return ok != 0 && console != ^uintptr(0) && uint32(console) == session
+}
+func commandDisplays(sleep, useDdc bool) error {
+	monitorMu.Lock()
+	defer monitorMu.Unlock()
+	if !activeConsoleSession() {
+		return errors.New("Агент працює поза фізичною сесією ASUS. Увійдіть у Windows на ноуті без RDP")
 	}
+	if !sleep {
+		kernel32.NewProc("SetThreadExecutionState").Call(3)
+		var result uintptr
+		user32.NewProc("SendMessageTimeoutW").Call(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, ^uintptr(0), 2, 100, uintptr(unsafe.Pointer(&result)))
+		time.Sleep(150 * time.Millisecond)
+	}
+	if useDdc {
+		_ = visitPhysicalMonitors(func(m PhysicalMonitor) {
+			// Internal laptop panels need the Windows power command, not DDC/CI.
+			name := syscall.UTF16ToString(m.Description[:])
+			_, readErr := readVCP(m, 0xD6)
+			if readErr == nil {
+				ddcPowerDisplays[name] = true
+			}
+			// Powered-off monitors may stop answering reads. Reuse verified support to wake them.
+			if readErr == nil || (!sleep && (ddcPowerDisplays[name] || name == "ASUS VG259QL5A")) {
+				value := uintptr(1)
+				if sleep {
+					value = 4
+				}
+				for attempt := 0; attempt < 3; attempt++ {
+					ok, _, _ := dxva2.NewProc("SetVCPFeature").Call(uintptr(m.HPhysicalMonitor), 0xD6, value)
+					if ok != 0 {
+						break
+					}
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
+		})
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	value := ^uintptr(0)
+	if sleep {
+		value = 2
+	} else {
+		kernel32.NewProc("SetThreadExecutionState").Call(3)
+	}
+	var result uintptr
+	// ABORTIFHUNG and a bounded per-window timeout replace the unbounded SendMessage.
+	ok, _, err := user32.NewProc("SendMessageTimeoutW").Call(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, value, 2, 100, uintptr(unsafe.Pointer(&result)))
+	if ok == 0 {
+		return fmt.Errorf("Windows не підтвердила прийняття команди екранам: %w", err)
+	}
+	requestedMonitorSleeping = sleep
+	return nil
 }
-
+func SleepDisplays(useDdc bool) error { return commandDisplays(true, useDdc) }
+func WakeDisplays(useDdc bool) error  { return commandDisplays(false, useDdc) }
 func IsMonitorSleeping() bool {
-	currentMonitorState.mu.Lock()
-	defer currentMonitorState.mu.Unlock()
-	return currentMonitorState.IsSleeping
+	monitorMu.Lock()
+	defer monitorMu.Unlock()
+	return requestedMonitorSleeping
 }

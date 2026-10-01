@@ -18,17 +18,25 @@ data class PcStatus(
     val batteryPercent: Int = 100,
     val isCharging: Boolean = false,
     val monitorSleeping: Boolean = false,
-    val keyboardLevel: Int = 3,
+    val monitorStateVerified: Boolean = false,
+    val keyboardLevel: Int = -1,
     val timestamp: Long = 0L,
     val connectedHost: String = ""
 )
 
-class PcApiClient {
-    private val client = OkHttpClient.Builder()
+data class LightingCapabilities(
+    val keyboardSupported: Boolean = false,
+    val laptopIndicatorsSupported: Boolean = false,
+    val monitorIndicatorSupported: Boolean = false,
+    val message: String = ""
+)
+
+class PcApiClient(
+    private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(4, TimeUnit.SECONDS)
         .build()
-
+) {
     var activeHost: String? = null
         private set
 
@@ -63,23 +71,40 @@ class PcApiClient {
         path: String,
         method: String = "GET",
         body: String? = null,
-        parser: (Response, String) -> T
+        parser: (Response, String, String) -> T
     ): Result<T> = withContext(Dispatchers.IO) {
         val candidates = getCandidates(config)
         var lastException: Exception? = null
 
         for (host in candidates) {
             try {
-                val resp = executeRequest(host, config, path, method, body)
-                if (resp.isSuccessful) {
-                    activeHost = host
-                    val parsed = parser(resp, host)
-                    return@withContext Result.success(parsed)
-                } else {
-                    lastException = Exception("[$host] HTTP ${resp.code}")
+                executeRequest(host, config, path, method, body).use { resp ->
+                    val bodyStr = resp.body?.string().orEmpty()
+                    val json = try {
+                        if (bodyStr.isNotBlank()) JSONObject(bodyStr) else null
+                    } catch (_: Exception) {
+                        null
+                    }
+
+                    val isSuccessFlag = json?.optBoolean("success", true) ?: true
+                    val errorMsg = json?.optString("error")?.takeIf { it.isNotBlank() }
+                        ?: json?.optString("message")?.takeIf { it.isNotBlank() }
+
+                    if ((resp.isSuccessful && isSuccessFlag) || resp.code == 207) {
+                        val parsed = parser(resp, bodyStr, host)
+                        activeHost = host
+                        return@withContext Result.success(parsed)
+                    } else {
+                        val msg = errorMsg ?: "[$host] HTTP ${resp.code}"
+                        return@withContext Result.failure(Exception(msg))
+                    }
                 }
             } catch (e: Exception) {
                 lastException = Exception("[$host] ${e.javaClass.simpleName}: ${e.message}")
+                // A timeout after a POST may mean the action already ran; do not repeat toggles.
+                if (method == "POST" && e !is java.net.ConnectException && e !is java.net.UnknownHostException) {
+                    return@withContext Result.failure(lastException!!)
+                }
             }
         }
 
@@ -87,58 +112,78 @@ class PcApiClient {
     }
 
     suspend fun getStatus(config: AppConfig): Result<PcStatus> {
-        return callWithFallback(config, "/api/status", "GET") { resp, host ->
-            val str = resp.body?.string() ?: "{}"
-            val json = JSONObject(str)
+        return callWithFallback(config, "/api/status", "GET") { _, bodyStr, host ->
+            val json = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
             PcStatus(
                 hostname = json.optString("hostname", "PC"),
                 isAcPlugged = json.optBoolean("is_ac_plugged", true),
                 batteryPercent = json.optInt("battery_percent", 100),
                 isCharging = json.optBoolean("is_charging", false),
                 monitorSleeping = json.optBoolean("monitor_sleeping", false),
-                keyboardLevel = json.optInt("keyboard_level", 3),
+                monitorStateVerified = json.optBoolean("monitor_state_verified", false),
+                keyboardLevel = json.optInt("keyboard_level", -1),
                 timestamp = json.optLong("timestamp", System.currentTimeMillis() / 1000),
                 connectedHost = host
             )
         }
     }
 
+    suspend fun getLightingCapabilities(config: AppConfig): Result<LightingCapabilities> {
+        return callWithFallback(config, "/api/lighting", "GET") { _, bodyStr, _ ->
+            val json = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
+            LightingCapabilities(
+                keyboardSupported = json.optBoolean("keyboard_supported", false),
+                laptopIndicatorsSupported = json.optBoolean("laptop_indicators_supported", false),
+                monitorIndicatorSupported = json.optBoolean("monitor_indicator_supported", false),
+                message = json.optString("message", "")
+            )
+        }
+    }
+
     suspend fun sleepMonitor(config: AppConfig): Result<Boolean> {
-        return callWithFallback(config, "/api/monitor/sleep", "POST") { resp, _ ->
-            resp.isSuccessful
+        return callWithFallback(config, "/api/monitor/sleep", "POST") { _, _, _ ->
+            true
         }
     }
 
     suspend fun wakeMonitor(config: AppConfig): Result<Boolean> {
-        return callWithFallback(config, "/api/monitor/wake", "POST") { resp, _ ->
-            resp.isSuccessful
+        return callWithFallback(config, "/api/monitor/wake", "POST") { _, _, _ ->
+            true
         }
     }
 
     suspend fun toggleMonitor(config: AppConfig): Result<Boolean> {
-        return callWithFallback(config, "/api/monitor/toggle", "POST") { resp, _ ->
-            resp.isSuccessful
+        return callWithFallback(config, "/api/monitor/toggle", "POST") { _, bodyStr, _ ->
+            val json = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
+            json.optBoolean("monitor_sleeping", false)
         }
     }
 
     suspend fun setKeyboardLevel(config: AppConfig, level: Int): Result<Int> {
         val json = JSONObject().apply { put("level", level) }
-        return callWithFallback(config, "/api/keyboard/level", "POST", json.toString()) { resp, _ ->
-            level
+        return callWithFallback(config, "/api/keyboard/level", "POST", json.toString()) { _, bodyStr, _ ->
+            val resJson = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
+            resJson.getInt("level").also { require(it in 0..3) { "Невідома яскравість клавіатури" } }
         }
     }
 
     suspend fun toggleKeyboard(config: AppConfig): Result<Int> {
-        return callWithFallback(config, "/api/keyboard/toggle", "POST") { resp, _ ->
-            val str = resp.body?.string() ?: "{}"
-            val json = JSONObject(str)
-            json.optInt("level", 0)
+        return callWithFallback(config, "/api/keyboard/toggle", "POST") { _, bodyStr, _ ->
+            val resJson = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
+            resJson.getInt("level").also { require(it in 0..3) { "Невідома яскравість клавіатури" } }
+        }
+    }
+
+    suspend fun darkMode(config: AppConfig): Result<String> {
+        return callWithFallback(config, "/api/lighting/dark", "POST") { _, bodyStr, _ ->
+            val json = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
+            json.getString("message").also { require(it.isNotBlank()) { "ПК не повернув результат темного режиму" } }
         }
     }
 
     suspend fun hibernate(config: AppConfig): Result<Boolean> {
-        return callWithFallback(config, "/api/power/hibernate", "POST") { resp, _ ->
-            resp.isSuccessful
+        return callWithFallback(config, "/api/power/hibernate", "POST") { _, _, _ ->
+            true
         }
     }
 }

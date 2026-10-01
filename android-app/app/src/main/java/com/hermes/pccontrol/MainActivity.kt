@@ -14,6 +14,7 @@ import com.hermes.pccontrol.data.AppPreferences
 import com.hermes.pccontrol.network.MikrotikClient
 import com.hermes.pccontrol.network.PcApiClient
 import com.hermes.pccontrol.network.PcStatus
+import com.hermes.pccontrol.network.LightingCapabilities
 import com.hermes.pccontrol.network.WolManager
 import com.hermes.pccontrol.ui.DashboardScreen
 import com.hermes.pccontrol.ui.DarkBg
@@ -54,6 +55,11 @@ class MainActivity : ComponentActivity() {
         var isOnline by remember { mutableStateOf(false) }
         var isRefreshing by remember { mutableStateOf(false) }
         var statusMessage by remember { mutableStateOf<String?>(null) }
+        var lightingCapabilities by remember { mutableStateOf<LightingCapabilities?>(null) }
+        var lightingBusy by remember { mutableStateOf(false) }
+        LaunchedEffect(config) {
+            lightingCapabilities = pcClient.getLightingCapabilities(config).getOrNull()
+        }
 
         var isCheckingUpdate by remember { mutableStateOf(false) }
         var isDownloadingUpdate by remember { mutableStateOf(false) }
@@ -73,17 +79,17 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        fun refreshStatus() {
+        fun refreshStatus(showFeedback: Boolean = false) {
             scope.launch {
                 isRefreshing = true
                 val res = pcClient.getStatus(config)
                 if (res.isSuccess) {
                     pcStatus = res.getOrNull()
                     isOnline = true
-                    statusMessage = "ПК в мережі. Оновлено!"
+                    if (showFeedback) statusMessage = "ПК в мережі. Оновлено!"
                 } else {
                     isOnline = false
-                    statusMessage = "ПК недоступний (можливо у сні або поза мережею)"
+                    if (showFeedback) statusMessage = "ПК недоступний (можливо у сні або поза мережею)"
                 }
                 isRefreshing = false
             }
@@ -106,13 +112,24 @@ class MainActivity : ComponentActivity() {
                 isOnline = isOnline,
                 isRefreshing = isRefreshing,
                 statusMessage = statusMessage,
-                onRefresh = { refreshStatus() },
+                lightingCapabilities = lightingCapabilities,
+                onDarkMode = {
+                    if (!lightingBusy) scope.launch {
+                        lightingBusy = true
+                        try {
+                            val result = pcClient.darkMode(config)
+                            statusMessage = result.getOrNull() ?: "Помилка: ${result.exceptionOrNull()?.message}"
+                            pcClient.getStatus(config).getOrNull()?.let { pcStatus = it }
+                        } finally { lightingBusy = false }
+                    }
+                },
+                onRefresh = { refreshStatus(true) },
                 onOpenSettings = { currentScreen = "settings" },
                 onSleepMonitor = {
                     scope.launch {
                         val res = pcClient.sleepMonitor(config)
                         if (res.isSuccess) {
-                            statusMessage = "Монітори переведено в режим сну (DDC/CI off)"
+                            statusMessage = "Команду вимкнення екранів прийнято"
                             refreshStatus()
                         } else {
                             statusMessage = "Помилка вимикання екрана: ${res.exceptionOrNull()?.message}"
@@ -123,7 +140,7 @@ class MainActivity : ComponentActivity() {
                     scope.launch {
                         val res = pcClient.wakeMonitor(config)
                         if (res.isSuccess) {
-                            statusMessage = "Монітори розбуджено"
+                            statusMessage = "Команду ввімкнення екранів прийнято"
                             refreshStatus()
                         } else {
                             statusMessage = "Помилка пробудження екрана: ${res.exceptionOrNull()?.message}"
@@ -134,8 +151,10 @@ class MainActivity : ComponentActivity() {
                     scope.launch {
                         val res = pcClient.setKeyboardLevel(config, lvl)
                         if (res.isSuccess) {
-                            statusMessage = "Яскравість клавіатури: $lvl"
+                            statusMessage = "Яскравість клавіатури: ${res.getOrNull()}"
                             refreshStatus()
+                        } else {
+                            statusMessage = "Помилка підсвітки: ${res.exceptionOrNull()?.message}"
                         }
                     }
                 },
@@ -146,6 +165,8 @@ class MainActivity : ComponentActivity() {
                             val newLvl = res.getOrNull() ?: 0
                             statusMessage = "Підсвітка перемкнута на $newLvl"
                             refreshStatus()
+                        } else {
+                            statusMessage = "Помилка підсвітки: ${res.exceptionOrNull()?.message}"
                         }
                     }
                 },

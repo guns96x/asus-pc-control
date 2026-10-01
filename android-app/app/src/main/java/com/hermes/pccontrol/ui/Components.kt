@@ -91,23 +91,26 @@ fun HeroActionButton(
             disabledContainerColor = containerColor.copy(alpha = 0.3f),
             disabledContentColor = contentColor.copy(alpha = 0.5f)
         ),
+        contentPadding = PaddingValues(horizontal = 8.dp),
         modifier = modifier
             .fillMaxWidth()
             .height(54.dp)
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Icon(
                 imageVector = icon,
                 contentDescription = null,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(18.dp)
             )
             Text(
                 text = text,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.SemiBold
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false
             )
         }
     }

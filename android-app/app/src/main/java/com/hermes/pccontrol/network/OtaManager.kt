@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -32,13 +33,27 @@ object OtaManager {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
+    private fun executeWithFallback(config: AppConfig, path: String): Response {
+        var failure: Exception? = null
+        val hosts = listOf(config.pcHost, config.pcFallbackHost).map { it.trim() }
+            .filter { it.isNotBlank() }.distinct()
+        for (host in hosts) {
+            try {
+                val request = Request.Builder().url("http://$host:${config.pcPort}$path").get().build()
+                val response = client.newCall(request).execute()
+                if (response.isSuccessful) return response
+                failure = Exception("[$host] HTTP ${response.code}")
+                response.close()
+            } catch (e: Exception) {
+                failure = Exception("[$host] ${e.javaClass.simpleName}")
+            }
+        }
+        throw failure ?: Exception("Немає доступних адрес ПК для оновлення")
+    }
+
     suspend fun checkUpdate(config: AppConfig): Result<AppVersionInfo> = withContext(Dispatchers.IO) {
         try {
-            val url = "http://${config.pcHost}:${config.pcPort}/api/app/version"
-            val request = Request.Builder().url(url).get().build()
-            val response = client.newCall(request).execute()
-
-            if (response.isSuccessful) {
+            executeWithFallback(config, "/api/app/version").use { response ->
                 val str = response.body?.string() ?: "{}"
                 val json = JSONObject(str)
                 val info = AppVersionInfo(
@@ -48,8 +63,6 @@ object OtaManager {
                     releaseNotes = json.optString("release_notes", "")
                 )
                 Result.success(info)
-            } else {
-                Result.failure(Exception("HTTP ${response.code}"))
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -76,35 +89,28 @@ object OtaManager {
                 }
             }
 
-            val apkUrl = "http://${config.pcHost}:${config.pcPort}/app.apk"
-            val request = Request.Builder().url(apkUrl).get().build()
-            val response = client.newCall(request).execute()
-
-            if (!response.isSuccessful) {
-                return@withContext Result.failure(Exception("Не вдалося завантажити APK: HTTP ${response.code}"))
-            }
-
-            val body = response.body ?: return@withContext Result.failure(Exception("Порожня відповідь сервера"))
-            val totalBytes = body.contentLength()
-
             val apkFile = File(context.cacheDir, "update.apk")
             if (apkFile.exists()) {
                 apkFile.delete()
             }
 
-            body.byteStream().use { input ->
-                FileOutputStream(apkFile).use { output ->
-                    val buffer = ByteArray(8 * 1024)
-                    var bytesCopied = 0L
-                    var read: Int
+            executeWithFallback(config, "/app.apk").use { response ->
+                val body = response.body ?: return@withContext Result.failure(Exception("Порожня відповідь сервера"))
+                val totalBytes = body.contentLength()
+                body.byteStream().use { input ->
+                    FileOutputStream(apkFile).use { output ->
+                        val buffer = ByteArray(8 * 1024)
+                        var bytesCopied = 0L
+                        var read: Int
 
-                    while (input.read(buffer).also { read = it } != -1) {
-                        output.write(buffer, 0, read)
-                        bytesCopied += read
-                        if (totalBytes > 0) {
-                            val progress = bytesCopied.toFloat() / totalBytes.toFloat()
-                            withContext(Dispatchers.Main) {
-                                onProgress(progress)
+                        while (input.read(buffer).also { read = it } != -1) {
+                            output.write(buffer, 0, read)
+                            bytesCopied += read
+                            if (totalBytes > 0) {
+                                val progress = bytesCopied.toFloat() / totalBytes.toFloat()
+                                withContext(Dispatchers.Main) {
+                                    onProgress(progress)
+                                }
                             }
                         }
                     }
