@@ -1,6 +1,6 @@
 # ASUS PC Remote Control (Android & Tailscale / LAN)
 
-Current build: **1.1.3 (code 5)**, package `com.hermes.pccontrol`. The APK keeps the existing signing certificate.
+Source version: **1.2.0 (code 6)**, package `com.hermes.pccontrol`. The APK committed in the repo is still **1.1.3 (code 5)** until it is rebuilt with `publishApk` (see "Збірка") on the PC that holds the original debug signing key, so OTA keeps installing in place.
 
 Download from ASUS while Tailscale is connected: http://100.82.252.86:8765/app.apk
 
@@ -62,7 +62,7 @@ Router deployment status: Tailscale container is deployed and running on MikroTi
 ### Крок 1. Запуск агента на ПК
 1. Перейдіть до папки `D:\asus-pc-control\pc-agent`.
 2. Запустіть `start.bat` (або `install-autostart.bat` від імені адміністратора для постійного фонового автозапуску).
-3. Агент запуститься на порту `8765` і згенерує Bearer Token (наприклад, `3f0f6c5206aafe05231c8c97034cd2cb`).
+3. Агент запуститься на порту `8765`; якщо `config.json` немає, він згенерує випадковий Bearer Token і запише його туди.
 
 ### Крок 2. Встановлення додатку на Android
 * **Найпростіший спосіб:** якщо телефон у Tailscale, відкрийте в браузері телефону:
@@ -79,6 +79,28 @@ Router deployment status: Tailscale container is deployed and running on MikroTi
 - **Auth Token:** токен з файлу `config.json` на ПК.
 - **MAC адреса:** `E8:9C:25:4C:4C:CA` (вже введена за замовчуванням).
 - **MikroTik:** IP роутера, порт (443), користувач `wol-bot` та пароль.
+
+---
+
+## 🛠 Збірка
+
+**Android** (JDK 17, Android SDK 35):
+```bat
+cd android-app
+gradlew testDebugUnitTest lintRelease publishApk
+```
+`publishApk` збирає мінімізований (R8) release APK, підписаний тим самим debug-ключем Android Studio, копіює його в `AsusControl.apk` і `pc-agent/AsusControl.apk` та пише `pc-agent/app-version.json`, з якого агент віддає `/api/app/version` для OTA.
+
+**PC-агент** (Go):
+```bat
+cd pc-agent
+go test ./...
+set GOOS=windows& set GOARCH=amd64& set CGO_ENABLED=0
+go build -trimpath -ldflags="-H=windowsgui -s -w" -o asus-pc-agent.exe .
+```
+Win32-код лежить у файлах `*_windows.go`, тож тести й `go vet` проходять і на Linux (CI у `.github/workflows/ci.yml`).
+
+API агента: токен приймається лише в заголовку `Authorization: Bearer <token>`; дії (`/api/monitor/*`, `/api/keyboard/*`, `/api/lighting/dark`, `/api/power/hibernate`) — лише `POST`.
 
 ---
 

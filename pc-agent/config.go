@@ -8,9 +8,9 @@ import (
 )
 
 type Config struct {
-	Port         int    `json:"port"`
-	AuthToken    string `json:"auth_token"`
-	EnableDDCCI  bool   `json:"enable_ddc_ci"`
+	Port        int    `json:"port"`
+	AuthToken   string `json:"auth_token"`
+	EnableDDCCI bool   `json:"enable_ddc_ci"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -27,7 +27,7 @@ func loadConfig(path string) (*Config, error) {
 
 		data, err := json.MarshalIndent(cfg, "", "  ")
 		if err == nil {
-			_ = os.WriteFile(path, data, 0644)
+			_ = os.WriteFile(path, data, 0600)
 		}
 		return cfg, nil
 	}

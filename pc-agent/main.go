@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -10,34 +12,19 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var config *Config
 
 func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
+		// Header only: a query-string token would end up in browser history and proxy logs.
+		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if config.AuthToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(config.AuthToken)) != 1 {
+			apiError(w, http.StatusUnauthorized, errors.New("unauthorized"))
 			return
 		}
-
-		authHeader := r.Header.Get("Authorization")
-		token := ""
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			token = strings.TrimPrefix(authHeader, "Bearer ")
-		} else {
-			token = r.URL.Query().Get("token")
-		}
-
-		if config.AuthToken != "" && token != config.AuthToken {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
-			return
-		}
-
 		next(w, r)
 	}
 }
@@ -156,10 +143,16 @@ func requirePost(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+var hibernate = HibernateSystem
+
 func handleHibernate(w http.ResponseWriter, r *http.Request) {
+	// GET must never hibernate: link previews and prefetchers issue GETs on their own.
+	if !requirePost(w, r) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "entering deep hibernation"})
-	HibernateSystem()
+	hibernate()
 }
 
 func printLocalIPs(port int) {
@@ -217,20 +210,20 @@ func main() {
 		http.ServeFile(w, r, "AsusControl.apk")
 	})
 
-	http.HandleFunc("/api/app/version", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version_code":  5,
-			"version_name":  "1.1.3",
-			"download_url":  "/app.apk",
-			"release_notes": "Керування клавіатурою через ASUS ACPI, екранами та темний режим",
-		})
-	})
+	http.HandleFunc("/api/app/version", handleAppVersion)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", config.Port)
 	printLocalIPs(config.Port)
 
-	if err := http.ListenAndServe(addr, nil); err != nil {
+	server := &http.Server{
+		Addr:              addr,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		// The APK download over Tailscale is the slowest response.
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  2 * time.Minute,
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }
