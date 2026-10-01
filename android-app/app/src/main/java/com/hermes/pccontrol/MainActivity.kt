@@ -9,9 +9,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.hermes.pccontrol.data.AppConfig
 import com.hermes.pccontrol.data.AppPreferences
 import com.hermes.pccontrol.network.MikrotikClient
+import com.hermes.pccontrol.network.OtaManager
 import com.hermes.pccontrol.network.PcApiClient
 import com.hermes.pccontrol.network.PcStatus
 import com.hermes.pccontrol.network.LightingCapabilities
@@ -57,25 +60,25 @@ class MainActivity : ComponentActivity() {
         var statusMessage by remember { mutableStateOf<String?>(null) }
         var lightingCapabilities by remember { mutableStateOf<LightingCapabilities?>(null) }
         var lightingBusy by remember { mutableStateOf(false) }
-        LaunchedEffect(config) {
-            lightingCapabilities = pcClient.getLightingCapabilities(config).getOrNull()
-        }
 
         var isCheckingUpdate by remember { mutableStateOf(false) }
         var isDownloadingUpdate by remember { mutableStateOf(false) }
-        var downloadProgress by remember { mutableStateOf(0f) }
+        var downloadProgress by remember { mutableFloatStateOf(0f) }
 
-        // Background poller
+        // Poll only while the app is visible: a backgrounded activity kept polling every 4 s and drained the battery.
         LaunchedEffect(config) {
-            while (true) {
-                val res = pcClient.getStatus(config)
-                if (res.isSuccess) {
-                    pcStatus = res.getOrNull()
-                    isOnline = true
-                } else {
-                    isOnline = false
+            lightingCapabilities = null
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    val res = pcClient.getStatus(config)
+                    isOnline = res.isSuccess
+                    res.getOrNull()?.let { pcStatus = it }
+                    // Capabilities were fetched once at start; a PC that was asleep then never got them.
+                    if (isOnline && lightingCapabilities == null) {
+                        lightingCapabilities = pcClient.getLightingCapabilities(config).getOrNull()
+                    }
+                    delay(4000)
                 }
-                delay(4000)
             }
         }
 
@@ -210,28 +213,18 @@ class MainActivity : ComponentActivity() {
                     scope.launch {
                         isCheckingUpdate = true
                         statusMessage = "Перевірка оновлення на ПК..."
-                        val checkRes = com.hermes.pccontrol.network.OtaManager.checkUpdate(config)
+                        val checkRes = OtaManager.checkUpdate(config)
                         isCheckingUpdate = false
 
                         if (checkRes.isSuccess) {
                             val info = checkRes.getOrNull()!!
-                            val currentVersionCode = try {
-                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
-                                    packageManager.getPackageInfo(packageName, 0).longVersionCode.toInt()
-                                } else {
-                                    @Suppress("DEPRECATION")
-                                    packageManager.getPackageInfo(packageName, 0).versionCode
-                                }
-                            } catch (e: Exception) {
-                                1
-                            }
-
+                            val currentVersionCode = BuildConfig.VERSION_CODE
                             if (info.versionCode > currentVersionCode) {
                                 statusMessage = "Знайдено оновлення ${info.versionName} (build ${info.versionCode})! Завантаження..."
                                 isDownloadingUpdate = true
                                 downloadProgress = 0f
 
-                                val dlRes = com.hermes.pccontrol.network.OtaManager.downloadAndInstallApk(
+                                val dlRes = OtaManager.downloadAndInstallApk(
                                     context = this@MainActivity,
                                     config = config,
                                     onProgress = { p -> downloadProgress = p }

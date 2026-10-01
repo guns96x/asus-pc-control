@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.hermes.pccontrol.BuildConfig
 import com.hermes.pccontrol.data.AppConfig
 import com.hermes.pccontrol.network.LightingCapabilities
 import com.hermes.pccontrol.network.PcStatus
@@ -470,7 +471,7 @@ fun DashboardScreen(
                             color = TextPrimary
                         )
                         Text(
-                            text = "Поточна версія: v1.1.0",
+                            text = "Поточна версія: v${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE})",
                             fontSize = 13.sp,
                             color = TextSecondary
                         )
