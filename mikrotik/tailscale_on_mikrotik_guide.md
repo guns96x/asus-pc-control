@@ -1,62 +1,49 @@
-# Підключення MikroTik до Tailscale & Wake-on-LAN для ASUS TUF
+     -LAN/ether1.
+- ASUS: 192.168.80.200, Tailscale 100.82.252.86, Ethernet MAC E8:9C:25:4C:4C:CA.
+- WinBox has a saved workspace for router MAC 48:8F:5A:2C:46:A4.
+- WebFig login: http://192.168.80.1/. SSH TCP opens but closes before key exchange.
+- Router configuration has NOT been changed in this run. Administrator authentication is pending.
 
-Цей посібник описує налаштування віддаленого пробудження вашого ПК (**MAC: `E8:9C:25:4C:4C:CA`**) з Android через Tailscale за допомогою MikroTik RouterOS v7.
+## Перед встановленням
 
----
+Run `preflight_readonly.rsc` through the authenticated router connection. Check installed container package, device-mode, free RAM, attached disks, actual bridge membership and service restrictions. Back up the current configuration before changing it; keep backups private.
 
-## Варіант 1: Tailscale в контейнері RouterOS v7 (Рекомендовано для пристроїв з ARM / ARM64 / x86)
+This model has 16 MB flash and 128 MB RAM. Container files and persistent Tailscale state must live on an existing external USB disk. Do not format an attached disk without checking its data. Do not extract the image into internal flash. ARM support alone does not prove there is enough free memory for this installation.
 
-Якщо ваш роутер MikroTik (наприклад, hAP ax2, hAP ax3, RB5009 або x86/CHR) підтримує пакет `container`:
+The container package must match the installed RouterOS version. Enabling container device-mode requires physical confirmation using the router button or cold power cycle. Plan that activation with the user; do not reboot during the current ASUS connection.
 
-### 1. Увімкнення режиму контейнерів
-У терміналі RouterOS:
-```routeros
-/system/device-mode/update container=yes
-```
-*(Роутер вимагатиме апаратного перезавантаження кнопкою або відключенням живлення для безпеки).*
+## Intended deployment
 
-### 2. Створення віртуального інтерфейсу та мережі
-```routeros
-/interface/veth/add name=veth-tailscale address=172.17.0.2/24 gateway=172.17.0.1
-/interface/bridge/add name=dockers
-/ip/address/add address=172.17.0.1/24 interface=dockers
-/interface/bridge/port add bridge=dockers interface=veth-tailscale
-/ip/firewall/nat add chain=srcnat action=masquerade src-address=172.17.0.0/24
-```
+Phone → Tailscale container on MikroTik → router REST `/rest/tool/wol` → ASUS Ethernet.
 
-### 3. Налаштування реєстру та контейнера
-```routeros
-/container/config/set registry-url=https://registry-1.docker.io tmpdir=disk1/pull
-/container/envs/add name=tailscale_envs key=TS_AUTHKEY value="tskey-auth-xxxxxx"
-/container/envs/add name=tailscale_envs key=TS_ROUTES value="192.168.88.0/24"
-/container/envs/add name=tailscale_envs key=TS_STATE_DIR value="/var/lib/tailscale"
+Use the official `tailscale/tailscale` ARM image, pinned to an inspected version/digest. Prepare an ARM image archive on the PC if memory limits make a registry pull unsuitable. Confirm available disk space and peak RAM before extraction.
 
-/container/add remote-image="tailscale/tailscale:latest" interface=veth-tailscale root-dir=disk1/tailscale envlist=tailscale_envs logging=yes
-/container/start 0
-```
-Тепер MikroTik буде у вашому Tailnet і зможе передавати запити REST API прямо з телефону, навіть коли ви поза домом!
+The container should use a dedicated veth/network selected after inspecting existing routes. Add only the required egress and router REST permissions; preserve existing firewall, NAT and management restrictions. No public WAN port forwarding is needed.
 
----
+Use these container environment settings:
 
-## Варіант 2: RouterOS REST API (Найпростіший спосіб)
+- `TS_USERSPACE=true` — userspace subnet routing is sufficient for the REST TCP request; no TUN assumption.
+- `TS_ROUTES=192.168.80.1/32` — access only the router for this wake-up feature.
+- `TS_ACCEPT_DNS=false`.
+- `TS_AUTH_ONCE=true`.
+- `TS_HOSTNAME=mikrotik-asus-wol`.
+- `TS_STATE_DIR=/var/lib/tailscale`, mounted on the USB disk and preserved on restart.
 
-Якщо MikroTik знаходиться в тій же домашній локальній мережі, а телефон під'єднаний через Tailscale Subnet Router (або домашній Wi-Fi):
+Authenticate through the user's tailnet without putting auth keys into this repository or logs. Approve the advertised route in Tailscale and restrict phone access to the router REST port. Enable start-on-boot after a successful first run. Userspace subnet routing supports TCP/UDP; use a real REST request as the check rather than ICMP alone.
 
-1. Відкрийте термінал RouterOS і виконайте команди з `setup_wol_rest.rsc`:
-```routeros
-/user group add name=wol-only policy=read,test,rest-api
-/user add name=wol-bot group=wol-only password="YourStrongPassword"
-/ip service set www-ssl disabled=no port=443
-```
-2. Android-додаток відправляє POST-запит:
-```http
-POST https://192.168.88.1/rest/tool/wol
-Authorization: Basic <base64(wol-bot:YourStrongPassword)>
-Content-Type: application/json
+## App and acceptance checks
 
-{
-  "mac": "E8:9C:25:4C:4C:CA",
-  "interface": "bridge"
-}
-```
-MikroTik надсилає апаратний Magic Packet рівня L2 Ethernet у свій комутатор/міст, і мережева карта Realtek ПК миттєво прокидається з гібернації!
+ASUS Control 1.1.2 defaults to router 192.168.80.1 and interface bridge-LAN. The old shipped 192.168.88.1/bridge placeholders are migrated; custom settings are preserved. Configure the actual REST credentials and the verified HTTPS service/certificate. The current app retains legacy self-signed certificate compatibility; certificate validation/pinning is still a follow-up, not a completed security guarantee.
+
+1. Confirm router resources and USB storage after login.
+2. Verify `/rest/tool/wol` succeeds locally for the actual Ethernet LAN interface.
+3. With phone Wi-Fi disabled and Tailscale enabled, verify the router REST route.
+4. Coordinate an ASUS hibernation/wake test with the user after deployment. Do not hibernate the computer while it is running this work.
+5. Confirm the same Tailscale node and REST route survive a planned router restart.
+
+## References
+
+- https://mikrotik.com/product/hap_ac2
+- https://help.mikrotik.com/docs/spaces/ROS/pages/84901929/Container
+- https://tailscale.com/docs/features/containers/docker/docker-params
+- https://tailscale.com/docs/reference/kernel-vs-userspace-routers
