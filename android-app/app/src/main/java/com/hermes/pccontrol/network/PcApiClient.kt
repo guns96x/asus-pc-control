@@ -20,6 +20,9 @@ data class PcStatus(
     val monitorSleeping: Boolean = false,
     val monitorStateVerified: Boolean = false,
     val keyboardLevel: Int = -1,
+    val performanceMode: Int = 0,
+    val performanceModeName: String = "",
+    val keepAwakeActive: Boolean = false,
     val timestamp: Long = 0L,
     val connectedHost: String = ""
 )
@@ -35,17 +38,43 @@ class PcApiClient(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(4, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
         .build()
 ) {
     var activeHost: String? = null
-        private set
+        internal set
 
-    private fun getCandidates(config: AppConfig): List<String> {
+    internal fun isConnectFailure(e: Exception): Boolean {
+        if (e is java.net.ConnectException ||
+            e is java.net.UnknownHostException ||
+            e is java.net.NoRouteToHostException ||
+            e is java.net.PortUnreachableException) {
+            return true
+        }
+        if (e is java.net.SocketTimeoutException) {
+            val msg = e.message.orEmpty().lowercase()
+            return msg.contains("connect timed out") || msg.contains("failed to connect")
+        }
+        val cause = e.cause
+        if (cause is Exception && cause !== e) {
+            return isConnectFailure(cause)
+        }
+        return false
+    }
+
+    internal fun getCandidates(config: AppConfig): List<String> {
         val list = mutableListOf<String>()
-        val cached = activeHost
-        if (!cached.isNullOrBlank()) list.add(cached)
-        if (config.pcHost.isNotBlank() && !list.contains(config.pcHost)) list.add(config.pcHost)
-        if (config.pcFallbackHost.isNotBlank() && !list.contains(config.pcFallbackHost)) list.add(config.pcFallbackHost)
+        val primary = config.pcHost.trim()
+        val fallback = config.pcFallbackHost.trim()
+        val validConfigHosts = listOf(primary, fallback).filter { it.isNotBlank() }
+
+        val cached = activeHost?.trim()
+        if (!cached.isNullOrBlank() && validConfigHosts.contains(cached)) {
+            list.add(cached)
+        }
+        for (h in validConfigHosts) {
+            if (!list.contains(h)) list.add(h)
+        }
         return list
     }
 
@@ -66,7 +95,7 @@ class PcApiClient(
         return client.newCall(builder.build()).execute()
     }
 
-    private suspend fun <T> callWithFallback(
+    internal suspend fun <T> callWithFallback(
         config: AppConfig,
         path: String,
         method: String = "GET",
@@ -96,13 +125,22 @@ class PcApiClient(
                         return@withContext Result.success(parsed)
                     } else {
                         val msg = errorMsg ?: "[$host] HTTP ${resp.code}"
-                        return@withContext Result.failure(Exception(msg))
+                        lastException = Exception(msg)
+                        if (method == "POST" || resp.code == 401 || resp.code == 403) {
+                            return@withContext Result.failure(lastException!!)
+                        }
+                        if (activeHost == host) {
+                            activeHost = null
+                        }
                     }
                 }
             } catch (e: Exception) {
                 lastException = Exception("[$host] ${e.javaClass.simpleName}: ${e.message}")
-                // A timeout after a POST may mean the action already ran; do not repeat toggles.
-                if (method == "POST" && e !is java.net.ConnectException && e !is java.net.UnknownHostException) {
+                if (activeHost == host) {
+                    activeHost = null
+                }
+                // A POST may already have changed hardware; only connection failures permit fallback.
+                if (method == "POST" && !isConnectFailure(e)) {
                     return@withContext Result.failure(lastException!!)
                 }
             }
@@ -113,7 +151,8 @@ class PcApiClient(
 
     suspend fun getStatus(config: AppConfig): Result<PcStatus> {
         return callWithFallback(config, "/api/status", "GET") { _, bodyStr, host ->
-            val json = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
+            val json = JSONObject(bodyStr)
+            require(json.has("hostname") && json.has("timestamp")) { "ПК повернув неповний статус" }
             PcStatus(
                 hostname = json.optString("hostname", "PC"),
                 isAcPlugged = json.optBoolean("is_ac_plugged", true),
@@ -122,6 +161,9 @@ class PcApiClient(
                 monitorSleeping = json.optBoolean("monitor_sleeping", false),
                 monitorStateVerified = json.optBoolean("monitor_state_verified", false),
                 keyboardLevel = json.optInt("keyboard_level", -1),
+                performanceMode = json.optInt("performance_mode", 0),
+                performanceModeName = json.optString("performance_mode_name", "balanced"),
+                keepAwakeActive = json.optBoolean("keep_awake_active", false),
                 timestamp = json.optLong("timestamp", System.currentTimeMillis() / 1000),
                 connectedHost = host
             )
@@ -160,6 +202,7 @@ class PcApiClient(
     }
 
     suspend fun setKeyboardLevel(config: AppConfig, level: Int): Result<Int> {
+        if (level !in 0..3) return Result.failure(IllegalArgumentException("Яскравість має бути від 0 до 3"))
         val json = JSONObject().apply { put("level", level) }
         return callWithFallback(config, "/api/keyboard/level", "POST", json.toString()) { _, bodyStr, _ ->
             val resJson = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
@@ -178,6 +221,22 @@ class PcApiClient(
         return callWithFallback(config, "/api/lighting/dark", "POST") { _, bodyStr, _ ->
             val json = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
             json.getString("message").also { require(it.isNotBlank()) { "ПК не повернув результат темного режиму" } }
+        }
+    }
+
+    suspend fun getPerformanceMode(config: AppConfig): Result<Int> {
+        return callWithFallback(config, "/api/performance", "GET") { _, bodyStr, _ ->
+            val json = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
+            json.optInt("mode", 0)
+        }
+    }
+
+    suspend fun setPerformanceMode(config: AppConfig, mode: Int): Result<Int> {
+        if (mode !in 0..2) return Result.failure(IllegalArgumentException("Режим має бути від 0 до 2"))
+        val json = JSONObject().apply { put("mode", mode) }
+        return callWithFallback(config, "/api/performance", "POST", json.toString()) { _, bodyStr, _ ->
+            val resJson = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
+            resJson.getInt("mode").also { require(it in 0..2) { "Невідомий режим продуктивності" } }
         }
     }
 

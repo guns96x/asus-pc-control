@@ -28,40 +28,67 @@ data class AppVersionInfo(
 object OtaManager {
     private const val TAG = "OtaManager"
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(5, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .build()
+    private val defaultClient = OkHttpClient.Builder()
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
 
-    private fun executeWithFallback(config: AppConfig, path: String): Response {
+    internal fun executeWithFallback(
+        config: AppConfig,
+        path: String,
+        client: OkHttpClient = defaultClient
+    ): Response {
         var failure: Exception? = null
         val hosts = listOf(config.pcHost, config.pcFallbackHost).map { it.trim() }
             .filter { it.isNotBlank() }.distinct()
+        require(path.startsWith("/") && !path.startsWith("//")) { "Некоректний шлях оновлення" }
+
         for (host in hosts) {
             try {
-                val request = Request.Builder().url("http://$host:${config.pcPort}$path").get().build()
+                val url = "http://$host:${config.pcPort}$path"
+                val request = Request.Builder().url(url).get().build()
                 val response = client.newCall(request).execute()
                 if (response.isSuccessful) return response
-                failure = Exception("[$host] HTTP ${response.code}")
+
+                val errBody = try {
+                    response.body?.string()?.takeIf { it.isNotBlank() }
+                } catch (_: Exception) {
+                    null
+                }
+                val serverMsg = try {
+                    if (errBody != null) {
+                        JSONObject(errBody).optString("error").takeIf { it.isNotBlank() }
+                            ?: JSONObject(errBody).optString("message").takeIf { it.isNotBlank() }
+                    } else null
+                } catch (_: Exception) {
+                    null
+                }
+                failure = Exception(serverMsg ?: "[$host] HTTP ${response.code}")
                 response.close()
             } catch (e: Exception) {
-                failure = Exception("[$host] ${e.javaClass.simpleName}")
+                failure = Exception("[$host] ${e.javaClass.simpleName}: ${e.message}")
             }
         }
         throw failure ?: Exception("Немає доступних адрес ПК для оновлення")
     }
 
-    suspend fun checkUpdate(config: AppConfig): Result<AppVersionInfo> = withContext(Dispatchers.IO) {
+    suspend fun checkUpdate(
+        config: AppConfig,
+        client: OkHttpClient = defaultClient
+    ): Result<AppVersionInfo> = withContext(Dispatchers.IO) {
         try {
-            executeWithFallback(config, "/api/app/version").use { response ->
-                val str = response.body?.string() ?: "{}"
-                val json = JSONObject(str)
+            executeWithFallback(config, "/api/app/version", client).use { response ->
+                val str = response.body?.string().orEmpty()
+                val json = if (str.isNotBlank()) JSONObject(str) else JSONObject()
                 val info = AppVersionInfo(
-                    versionCode = json.optInt("version_code", 1),
-                    versionName = json.optString("version_name", "1.0.0"),
-                    downloadUrl = json.optString("download_url", "/app.apk"),
+                    versionCode = json.getInt("version_code"),
+                    versionName = json.getString("version_name"),
+                    downloadUrl = json.getString("download_url"),
                     releaseNotes = json.optString("release_notes", "")
                 )
+                require(info.versionCode > 0 && info.versionName.isNotBlank() && info.downloadUrl == "/app.apk") {
+                    "ПК повернув некоректну інформацію про оновлення"
+                }
                 Result.success(info)
             }
         } catch (e: Exception) {
@@ -72,6 +99,8 @@ object OtaManager {
     suspend fun downloadAndInstallApk(
         context: Context,
         config: AppConfig,
+        downloadUrl: String = "/app.apk",
+        client: OkHttpClient = defaultClient,
         onProgress: (Float) -> Unit
     ): Result<Unit> = withContext(Dispatchers.IO) {
         try {
@@ -90,31 +119,45 @@ object OtaManager {
             }
 
             val apkFile = File(context.cacheDir, "update.apk")
-            if (apkFile.exists()) {
-                apkFile.delete()
-            }
+            val tempFile = File(context.cacheDir, "update.apk.tmp")
+            if (tempFile.exists()) tempFile.delete()
+            if (apkFile.exists()) apkFile.delete()
 
-            executeWithFallback(config, "/app.apk").use { response ->
+            executeWithFallback(config, downloadUrl, client).use { response ->
                 val body = response.body ?: return@withContext Result.failure(Exception("Порожня відповідь сервера"))
                 val totalBytes = body.contentLength()
                 body.byteStream().use { input ->
-                    FileOutputStream(apkFile).use { output ->
-                        val buffer = ByteArray(8 * 1024)
+                    FileOutputStream(tempFile).use { output ->
+                        val buffer = ByteArray(32 * 1024)
                         var bytesCopied = 0L
                         var read: Int
+                        var lastProgressReport = 0L
 
                         while (input.read(buffer).also { read = it } != -1) {
                             output.write(buffer, 0, read)
                             bytesCopied += read
                             if (totalBytes > 0) {
                                 val progress = bytesCopied.toFloat() / totalBytes.toFloat()
-                                withContext(Dispatchers.Main) {
-                                    onProgress(progress)
+                                val now = System.currentTimeMillis()
+                                if (now - lastProgressReport > 100 || bytesCopied == totalBytes) {
+                                    lastProgressReport = now
+                                    withContext(Dispatchers.Main) {
+                                        onProgress(progress)
+                                    }
                                 }
                             }
                         }
+                        require(bytesCopied > 0 && (totalBytes < 0 || bytesCopied == totalBytes)) {
+                            "APK завантажено не повністю"
+                        }
+                        output.flush()
                     }
                 }
+            }
+
+            if (!tempFile.renameTo(apkFile)) {
+                tempFile.copyTo(apkFile, overwrite = true)
+                tempFile.delete()
             }
 
             Log.i(TAG, "APK successfully downloaded to ${apkFile.absolutePath}, launching installer...")
@@ -130,6 +173,13 @@ object OtaManager {
                     setDataAndType(apkUri, "application/vnd.android.package-archive")
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
                 }
+
+                val resolveList = context.packageManager.queryIntentActivities(installIntent, 0)
+                for (resolveInfo in resolveList) {
+                    val pkg = resolveInfo.activityInfo.packageName
+                    context.grantUriPermission(pkg, apkUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+
                 context.startActivity(installIntent)
             }
 

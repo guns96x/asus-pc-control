@@ -9,3 +9,10 @@ local.properties
 # Logs
 *.log
 agent.log
+
+# Local release rollback copies
+.release-backups/
+
+# Local scripts & data
+sync_photo_pipeline.py
+*.apk.new

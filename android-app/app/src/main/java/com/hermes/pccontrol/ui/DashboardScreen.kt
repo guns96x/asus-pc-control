@@ -11,6 +11,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hermes.pccontrol.data.AppConfig
@@ -39,6 +40,7 @@ fun DashboardScreen(
     onTriggerOtaUpdate: () -> Unit = {},
     lightingCapabilities: LightingCapabilities? = null,
     onDarkMode: () -> Unit = {},
+    onSetPerformanceMode: (Int) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showHibernateDialog by remember { mutableStateOf(false) }
@@ -55,7 +57,7 @@ fun DashboardScreen(
             },
             text = {
                 Text(
-                    text = "Ноутбук ASUS збереже стан у hiberfil.sys і повністю вимкнеться (0W). Пробудження можливе через кнопку живлення або Wake-on-LAN пакет.",
+                    text = "Ноутбук ASUS збереже стан у hiberfil.sys і перейде в гібернацію. Пробудження — кнопкою живлення або через Wake-on-LAN, якщо його підтримує мережева карта.",
                     color = TextSecondary,
                     fontSize = 14.sp
                 )
@@ -96,17 +98,21 @@ fun DashboardScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "ASUS TUF Control",
+                    text = "ASUS Control",
                     fontSize = 24.sp,
                     fontWeight = FontWeight.Bold,
-                    color = TextPrimary
+                    color = TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = config.pcHost,
+                    text = pcStatus?.connectedHost?.takeIf { isOnline && it.isNotBlank() } ?: config.pcHost,
                     fontSize = 13.sp,
-                    color = TextSecondary
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
 
@@ -117,7 +123,7 @@ fun DashboardScreen(
                 if (isOnline) {
                     StatusBadge(text = "Online", dotColor = AccentEmerald)
                 } else {
-                    StatusBadge(text = "Offline / S4", dotColor = AccentAmber)
+                    StatusBadge(text = "Offline", dotColor = AccentAmber)
                 }
 
                 IconButton(
@@ -249,7 +255,7 @@ fun DashboardScreen(
                         color = TextPrimary
                     )
                     Text(
-                        text = "Гасить відеосигнал Windows і вимикає DDC/CI",
+                        text = "Вимкнення екранів (ПК продовжує працювати)",
                         fontSize = 13.sp,
                         color = TextSecondary
                     )
@@ -353,6 +359,100 @@ fun DashboardScreen(
                 enabled = isOnline,
                 onClick = onDarkMode
             )
+        }
+
+        // --- Card: Performance Mode (G-Helper) ---
+        GlassCard {
+            val currentMode = pcStatus?.performanceMode ?: 0
+            val modeTitle = when (currentMode) {
+                1 -> "Турбо"
+                2 -> "Тихий"
+                else -> "Баланс"
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Speed,
+                        contentDescription = null,
+                        tint = when (currentMode) {
+                            1 -> AccentRose
+                            2 -> AccentEmerald
+                            else -> AccentCyan
+                        },
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Column {
+                        Text(
+                            text = "Режим роботи (G-Helper)",
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = if (isOnline) "Поточний профіль: $modeTitle" else "Немає зв'язку з ПК",
+                            fontSize = 13.sp,
+                            color = TextSecondary
+                        )
+                    }
+                }
+
+                StatusBadge(
+                    text = modeTitle,
+                    dotColor = when (currentMode) {
+                        1 -> AccentRose
+                        2 -> AccentEmerald
+                        else -> AccentCyan
+                    }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                PerformanceModeButton(
+                    title = "Тихий",
+                    subtitle = "Silent",
+                    icon = Icons.Default.Eco,
+                    isSelected = isOnline && currentMode == 2,
+                    activeColor = AccentEmerald,
+                    enabled = isOnline,
+                    onClick = { onSetPerformanceMode(2) },
+                    modifier = Modifier.weight(1f)
+                )
+
+                PerformanceModeButton(
+                    title = "Баланс",
+                    subtitle = "Balanced",
+                    icon = Icons.Default.Balance,
+                    isSelected = isOnline && currentMode == 0,
+                    activeColor = AccentCyan,
+                    enabled = isOnline,
+                    onClick = { onSetPerformanceMode(0) },
+                    modifier = Modifier.weight(1f)
+                )
+
+                PerformanceModeButton(
+                    title = "Турбо",
+                    subtitle = "Turbo",
+                    icon = Icons.Default.RocketLaunch,
+                    isSelected = isOnline && currentMode == 1,
+                    activeColor = AccentRose,
+                    enabled = isOnline,
+                    onClick = { onSetPerformanceMode(1) },
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
 
         // --- Card 3: Deep Hibernation (S4) ---

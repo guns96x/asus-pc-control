@@ -40,7 +40,7 @@ object WolManager {
     }
 
     fun parseMac(macStr: String): ByteArray {
-        val clean = macStr.replace(":", "").replace("-", "").trim()
+        val clean = macStr.replace(":", "").replace("-", "").replace(".", "").trim()
         require(clean.length == 12 && clean.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) {
             "Невірний формат MAC-адреси: $macStr"
         }

@@ -75,17 +75,17 @@ fun SettingsScreen(
             IconButton(
                 onClick = {
                     val newCfg = AppConfig(
-                        pcHost = pcHost,
-                        pcFallbackHost = pcFallbackHost,
-                        pcPort = pcPort.toIntOrNull() ?: 8765,
-                        authToken = authToken,
-                        pcMac = pcMac,
-                        mikrotikHost = mikrotikHost,
-                        mikrotikPort = mikrotikPort.toIntOrNull() ?: 443,
+                        pcHost = pcHost.trim(),
+                        pcFallbackHost = pcFallbackHost.trim(),
+                        pcPort = pcPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: 8765,
+                        authToken = authToken.trim(),
+                        pcMac = pcMac.trim().uppercase(),
+                        mikrotikHost = mikrotikHost.trim(),
+                        mikrotikPort = mikrotikPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: 443,
                         mikrotikUseHttps = mikrotikUseHttps,
-                        mikrotikUser = mikrotikUser,
+                        mikrotikUser = mikrotikUser.trim(),
                         mikrotikPass = mikrotikPass,
-                        mikrotikInterface = mikrotikInterface
+                        mikrotikInterface = mikrotikInterface.trim()
                     )
                     onSaveConfig(newCfg)
                     onBack()
@@ -231,17 +231,17 @@ fun SettingsScreen(
             containerColor = AccentIndigo,
             onClick = {
                 val newCfg = AppConfig(
-                    pcHost = pcHost,
-                    pcFallbackHost = pcFallbackHost,
-                    pcPort = pcPort.toIntOrNull() ?: 8765,
-                    authToken = authToken,
-                    pcMac = pcMac,
-                    mikrotikHost = mikrotikHost,
-                    mikrotikPort = mikrotikPort.toIntOrNull() ?: 443,
+                    pcHost = pcHost.trim(),
+                    pcFallbackHost = pcFallbackHost.trim(),
+                    pcPort = pcPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: 8765,
+                    authToken = authToken.trim(),
+                    pcMac = pcMac.trim().uppercase(),
+                    mikrotikHost = mikrotikHost.trim(),
+                    mikrotikPort = mikrotikPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: 443,
                     mikrotikUseHttps = mikrotikUseHttps,
-                    mikrotikUser = mikrotikUser,
+                    mikrotikUser = mikrotikUser.trim(),
                     mikrotikPass = mikrotikPass,
-                    mikrotikInterface = mikrotikInterface
+                    mikrotikInterface = mikrotikInterface.trim()
                 )
                 onSaveConfig(newCfg)
                 onBack()

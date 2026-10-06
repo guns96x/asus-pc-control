@@ -4,19 +4,22 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 )
 
 type Config struct {
-	Port         int    `json:"port"`
-	AuthToken    string `json:"auth_token"`
-	EnableDDCCI  bool   `json:"enable_ddc_ci"`
+	Port        int    `json:"port"`
+	AuthToken   string `json:"auth_token"`
+	EnableDDCCI bool   `json:"enable_ddc_ci"`
 }
 
 func loadConfig(path string) (*Config, error) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		tokenBytes := make([]byte, 16)
-		rand.Read(tokenBytes)
+		if _, err := rand.Read(tokenBytes); err != nil {
+			return nil, err
+		}
 		token := hex.EncodeToString(tokenBytes)
 
 		cfg := &Config{
@@ -26,8 +29,11 @@ func loadConfig(path string) (*Config, error) {
 		}
 
 		data, err := json.MarshalIndent(cfg, "", "  ")
-		if err == nil {
-			_ = os.WriteFile(path, data, 0644)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			return nil, fmt.Errorf("save agent configuration: %w", err)
 		}
 		return cfg, nil
 	}
@@ -44,6 +50,12 @@ func loadConfig(path string) (*Config, error) {
 
 	if cfg.Port == 0 {
 		cfg.Port = 8765
+	}
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return nil, fmt.Errorf("agent port must be between 1 and 65535")
+	}
+	if cfg.AuthToken == "" {
+		return nil, fmt.Errorf("agent authentication token must not be empty")
 	}
 	return &cfg, nil
 }

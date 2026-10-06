@@ -5,6 +5,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
@@ -30,7 +31,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         prefs = AppPreferences(this)
 
         setContent {
@@ -170,6 +174,22 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 },
+                onSetPerformanceMode = { mode ->
+                    scope.launch {
+                        val res = pcClient.setPerformanceMode(config, mode)
+                        if (res.isSuccess) {
+                            val title = when (mode) {
+                                1 -> "Турбо"
+                                2 -> "Тихий"
+                                else -> "Баланс"
+                            }
+                            statusMessage = "Режим роботи: $title"
+                            refreshStatus()
+                        } else {
+                            statusMessage = "Помилка зміни режиму: ${res.exceptionOrNull()?.message}"
+                        }
+                    }
+                },
                 onHibernate = {
                     scope.launch {
                         val res = pcClient.hibernate(config)
@@ -234,6 +254,7 @@ class MainActivity : ComponentActivity() {
                                 val dlRes = com.hermes.pccontrol.network.OtaManager.downloadAndInstallApk(
                                     context = this@MainActivity,
                                     config = config,
+                                    downloadUrl = info.downloadUrl,
                                     onProgress = { p -> downloadProgress = p }
                                 )
                                 isDownloadingUpdate = false

@@ -1,6 +1,8 @@
 # ASUS PC Remote Control (Android & Tailscale / LAN)
 
-Current build: **1.1.3 (code 5)**, package `com.hermes.pccontrol`. The APK keeps the existing signing certificate.
+Current build: **1.2.0 (code 7)**, package `com.hermes.pccontrol`. The APK keeps the existing signing certificate.
+
+Fresh build, API and emulator verification: [completion report](docs/project-completion-2026-10-02.md).
 
 Download from ASUS while Tailscale is connected: http://100.82.252.86:8765/app.apk
 
@@ -14,17 +16,23 @@ Router deployment status: Tailscale container is deployed and running on MikroTi
 
 ## ⚡ Можливості системи
 
-1. **Керування екранами (Монітор On / Off)**:
-   - Переведення моніторів у режим сну через Windows SysCommand (`SC_MONITORPOWER = 2`).
-   - Пряма апаратна команда **DDC/CI (`VCP 0xD6 = 4`)** для зовнішнього ігрового монітора **ASUS VG259QL5A**, щоб повністю гасити підсвітку і виключати «сіре світіння».
-   - М'яке та миттєве пробудження (`SC_MONITORPOWER = -1`, `ES_DISPLAY_REQUIRED`, DDC/CI `0xD6 = 1`).
+1. **Режими роботи ASUS (G-Helper інтеграція)**:
+   - Перемикання режимів продуктивності: **Тихий (Silent / 2)**, **Баланс (Balanced / 0)**, **Турбо (Turbo / 1)**.
+   - Пряма апаратна взаємодія через ASUS ATKACPI (`0x00120075`) та двостороння синхронізація конфігурації G-Helper (`%APPDATA%\GHelper\config.json`).
+   - Синхронізація Windows Power Scheme (Power Saver / Balanced / High Performance).
 
-2. **Підсвітка клавіатури ASUS TUF**:
-   - Інтеграція з контролером ASUS ACPI WMI (`root\wmi:AsusAtkWmi_WMNB`).
+2. **Керування екранами без переривання роботи ПК**:
+   - Гасіння екранів через SysCommand (`SC_MONITORPOWER = 2`) та DDC/CI (`VCP 0xD6 = 4`).
+   - **Захист від засинання ПК (Keep-Awake Controller)**: Windows Power Request API (`PowerRequestSystemRequired` + `PowerRequestExecutionRequired`) та безперервний `SetThreadExecutionState`. При вимкненому дисплеї процесор, фонові процеси та мережа (Tailscale / Wi-Fi) продовжують працювати на 100%!
+   - М'яке пробудження (`SC_MONITORPOWER = -1`, DDC/CI `0xD6 = 1`) з коректним звільненням запитів живлення.
+
+3. **Підсвітка клавіатури ASUS TUF та зовнішніх пристроїв**:
+   - Інтеграція з контролером ASUS ACPI WMI (`root\wmi:AsusAtkWmi_WMNB`, Device ID `0x00050021`).
    - Перемикання в один клік (On/Off) та вибір 4 рівнів яскравості: **Off (0), Low (1), Med (2), Max (3)**.
+   - Темний режим із вимкненням підсвітки та сигналом ScrollLock для зовнішніх клавіатур.
 
 3. **Глибока гібернація (S4)**:
-   - Команда `shutdown /h` (збереження пам'яті в `hiberfil.sys`, нульове споживання 0W).
+   - Команда `shutdown /h` (збереження пам'яті в `hiberfil.sys`; фактичне споживання залежить від апаратної конфігурації).
    - Збереження стану мережевої карти Realtek GbE для прийому Magic Packet.
    - Захист від випадкового натискання (діалогове підтвердження в додатку).
 
@@ -33,7 +41,7 @@ Router deployment status: Tailscale container is deployed and running on MikroTi
    - **MikroTik RouterOS REST API (Tailscale / Internet):** телефон надсилає захищений HTTPS REST-запит до роутера MikroTik (`POST /rest/tool/wol`), і роутер апаратно генерує L2 Ethernet Magic Packet прямо в локальний порт/міст ПК!
 
 5. **Телеметрія в реальному часі**:
-   - Статус: Online / Offline (S4 гібернація).
+   - Статус: Online / Offline. Offline означає відсутність відповіді агента; це може бути гібернація або проблема з мережею.
    - Джерело живлення: Мережа (AC) / Батарея.
    - Відсоток заряду акумулятора та статус заряджання.
    - Стан екранів та рівень підсвітки.
@@ -43,10 +51,10 @@ Router deployment status: Tailscale container is deployed and running on MikroTi
 ## 📁 Структура проєкту
 
 - **`pc-agent/`**:
-  - `asus-pc-agent.exe`: легковажний Go-демон (< 10 МБ RAM, 0% CPU), Win32 API interop, DDC/CI dxva2.dll, WMI, REST API з Bearer Token.
+  - `asus-pc-agent.exe`: Go-агент, Win32 API interop, DDC/CI dxva2.dll, WMI, REST API з Bearer Token.
   - `config.json`: порт (8765), токен безпеки, прапор DDC/CI.
   - `start.bat`: прямий запуск.
-  - `install-autostart.bat`: автозапуск демона при вході у Windows через Планувальник завдань із найвищими правами.
+  - `install-autostart.bat` / `install-autostart.ps1`: автозапуск для поточного користувача Windows без прав адміністратора, у фізичній сесії ноутбука.
 - **`android-app/`**:
   - Повноцінний вихідний код Android-додатку на **Kotlin + Jetpack Compose + Material 3** у стилі Dark Neobank / Cyberpunk.
 - **`AsusControl.apk`**:
@@ -61,7 +69,7 @@ Router deployment status: Tailscale container is deployed and running on MikroTi
 
 ### Крок 1. Запуск агента на ПК
 1. Перейдіть до папки `D:\asus-pc-control\pc-agent`.
-2. Запустіть `start.bat` (або `install-autostart.bat` від імені адміністратора для постійного фонового автозапуску).
+2. Запустіть `start.bat` або `install-autostart.bat` для фонового запуску та автозапуску при наступному вході поточного користувача.
 3. Агент запуститься на порту `8765` і згенерує Bearer Token (наприклад, `3f0f6c5206aafe05231c8c97034cd2cb`).
 
 ### Крок 2. Встановлення додатку на Android

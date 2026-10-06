@@ -4,9 +4,9 @@ import android.util.Log
 import com.hermes.pccontrol.data.AppConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.HttpUrl
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
@@ -30,7 +30,7 @@ object MikrotikClient {
                 override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
             })
 
-            val sslContext = SSLContext.getInstance("SSL")
+            val sslContext = SSLContext.getInstance("TLS")
             sslContext.init(null, trustAllCerts, SecureRandom())
 
             OkHttpClient.Builder()

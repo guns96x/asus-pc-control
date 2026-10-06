@@ -19,6 +19,7 @@ class WolManagerTest {
         assertArrayEquals(expected, WolManager.parseMac("12:34:56:78:9A:BC"))
         assertArrayEquals(expected, WolManager.parseMac("12-34-56-78-9a-bc"))
         assertArrayEquals(expected, WolManager.parseMac(" 123456789abc "))
+        assertArrayEquals(expected, WolManager.parseMac("1234.5678.9abc"))
     }
 
     @Test(expected = IllegalArgumentException::class)

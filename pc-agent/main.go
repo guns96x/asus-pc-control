@@ -156,7 +156,64 @@ func requirePost(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+func handlePerformanceGet(w http.ResponseWriter, r *http.Request) {
+	mode, name, err := GetCurrentPerformanceMode()
+	if err != nil {
+		apiError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":    true,
+		"mode":       mode,
+		"mode_name":  name,
+		"mode_title": PerfModeTitle(mode),
+		"available_modes": []map[string]any{
+			{"mode": PerfModeSilent, "name": "silent", "title": "Тихий"},
+			{"mode": PerfModeBalanced, "name": "balanced", "title": "Баланс"},
+			{"mode": PerfModeTurbo, "name": "turbo", "title": "Турбо"},
+		},
+	})
+}
+
+func handlePerformanceSet(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	modeStr := r.URL.Query().Get("mode")
+	if modeStr == "" {
+		var req struct {
+			Mode *int `json:"mode"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err == nil && req.Mode != nil {
+			modeStr = strconv.Itoa(*req.Mode)
+		}
+	}
+
+	mode, err := strconv.Atoi(modeStr)
+	if err != nil || mode < 0 || mode > 2 {
+		apiError(w, http.StatusBadRequest, fmt.Errorf("Режим має бути числом 0 (Баланс), 1 (Турбо) або 2 (Тихий)"))
+		return
+	}
+
+	if err := SetCurrentPerformanceMode(mode); err != nil {
+		apiError(w, http.StatusServiceUnavailable, err)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"success":    true,
+		"mode":       mode,
+		"mode_name":  PerfModeName(mode),
+		"mode_title": PerfModeTitle(mode),
+	})
+}
+
 func handleHibernate(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "entering deep hibernation"})
 	HibernateSystem()
@@ -196,6 +253,14 @@ func main() {
 	}
 
 	http.HandleFunc("/api/status", authMiddleware(handleStatus))
+	http.HandleFunc("/api/performance", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			handlePerformanceSet(w, r)
+		} else {
+			handlePerformanceGet(w, r)
+		}
+	}))
+	http.HandleFunc("/api/performance/mode", authMiddleware(handlePerformanceSet))
 	http.HandleFunc("/api/monitor/sleep", authMiddleware(handleMonitorSleep))
 	http.HandleFunc("/api/monitor/wake", authMiddleware(handleMonitorWake))
 	http.HandleFunc("/api/monitor/toggle", authMiddleware(handleMonitorToggle))
@@ -217,15 +282,7 @@ func main() {
 		http.ServeFile(w, r, "AsusControl.apk")
 	})
 
-	http.HandleFunc("/api/app/version", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"version_code":  5,
-			"version_name":  "1.1.3",
-			"download_url":  "/app.apk",
-			"release_notes": "Керування клавіатурою через ASUS ACPI, екранами та темний режим",
-		})
-	})
+	http.HandleFunc("/api/app/version", handleAppVersion)
 
 	addr := fmt.Sprintf("0.0.0.0:%d", config.Port)
 	printLocalIPs(config.Port)

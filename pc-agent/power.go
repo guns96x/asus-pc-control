@@ -26,6 +26,9 @@ type SystemInfo struct {
 	MonitorSleeping      bool   `json:"monitor_sleeping"`
 	MonitorStateVerified bool   `json:"monitor_state_verified"`
 	KeyboardLevel        int    `json:"keyboard_level"`
+	PerformanceMode      int    `json:"performance_mode"`
+	PerformanceModeName  string `json:"performance_mode_name"`
+	KeepAwakeActive      bool   `json:"keep_awake_active"`
 	Timestamp            int64  `json:"timestamp"`
 }
 
@@ -47,14 +50,19 @@ func GetSystemStatus() SystemInfo {
 		isCharging = (sps.BatteryFlag & 8) != 0
 	}
 
+	perfMode, perfName, _ := GetCurrentPerformanceMode()
+
 	return SystemInfo{
-		Hostname:        hostname,
-		IsACPlugged:     isAC,
-		BatteryPercent:  batPct,
-		IsCharging:      isCharging,
-		MonitorSleeping: IsMonitorSleeping(),
-		KeyboardLevel:   GetAsusKeyboardBrightness(),
-		Timestamp:       time.Now().Unix(),
+		Hostname:            hostname,
+		IsACPlugged:         isAC,
+		BatteryPercent:      batPct,
+		IsCharging:          isCharging,
+		MonitorSleeping:     IsMonitorSleeping(),
+		KeyboardLevel:       GetAsusKeyboardBrightness(),
+		PerformanceMode:     perfMode,
+		PerformanceModeName: perfName,
+		KeepAwakeActive:     globalKeepAwake.IsActive(),
+		Timestamp:           time.Now().Unix(),
 	}
 }
 

@@ -175,13 +175,18 @@ func commandDisplays(sleep, useDdc bool) error {
 	value := ^uintptr(0)
 	if sleep {
 		value = 2
+		_ = globalKeepAwake.Acquire()
 	} else {
+		globalKeepAwake.Release()
 		kernel32.NewProc("SetThreadExecutionState").Call(3)
 	}
 	var result uintptr
 	// ABORTIFHUNG and a bounded per-window timeout replace the unbounded SendMessage.
 	ok, _, err := user32.NewProc("SendMessageTimeoutW").Call(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, value, 2, 100, uintptr(unsafe.Pointer(&result)))
 	if ok == 0 {
+		if sleep {
+			globalKeepAwake.Release()
+		}
 		return fmt.Errorf("Windows не підтвердила прийняття команди екранам: %w", err)
 	}
 	requestedMonitorSleeping = sleep

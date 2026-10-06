@@ -15,12 +15,30 @@ type LightingAction struct {
 	Message string `json:"message"`
 }
 
+func turnOffScrollLockIfActive() bool {
+	procGetKeyState := user32.NewProc("GetKeyState")
+	state, _, _ := procGetKeyState.Call(0x91) // VK_SCROLL
+	// Low-order bit indicates whether toggle key is ON
+	if state&1 != 0 {
+		procKeybdEvent := user32.NewProc("keybd_event")
+		procKeybdEvent.Call(0x91, 0, 0, 0)
+		procKeybdEvent.Call(0x91, 0, 2, 0)
+		return true
+	}
+	return false
+}
+
 func handleLighting(w http.ResponseWriter, r *http.Request) {
 	_, kbErr := ReadAsusKeyboardBrightness()
 	raw, ledErr := deviceRead(asusStatusLED)
 	ledSupported := ledErr == nil && devicePresent(raw)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"keyboard_supported": kbErr == nil, "laptop_indicators_supported": ledSupported, "monitor_indicator_supported": false, "message": "Індикатор монітора: меню System Setup → Power Indicator → OFF. Індикатори живлення/заряджання ноутбука не мають підтвердженого програмного керування. Статус екранів показує останній запит, а не фізичне підтвердження."})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"keyboard_supported":          kbErr == nil,
+		"laptop_indicators_supported": ledSupported,
+		"monitor_indicator_supported": false,
+		"message":                     "Внутрішня клавіатура ASUS TUF: повний контроль (0-3). Зовнішня USB-клавіатура: апаратний контролер живиться від шини USB +5V (вимикається комбінацією клавіш Fn на клавіатурі). Індикатор монітора: меню System Setup → Power Indicator → OFF.",
+	})
 }
 func handleDarkMode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -35,7 +53,17 @@ func handleDarkMode(w http.ResponseWriter, r *http.Request) {
 		}
 		actions = append(actions, a)
 	}
-	add("Клавіатура", SetAsusKeyboardBrightness(0))
+	add("Внутрішня клавіатура", SetAsusKeyboardBrightness(0))
+	slToggled := turnOffScrollLockIfActive()
+	slMsg := "ScrollLock уже вимкнено"
+	if slToggled {
+		slMsg = "ScrollLock вимкнено"
+	}
+	actions = append(actions, LightingAction{
+		Name:    "Зовнішня клавіатура",
+		Success: true,
+		Message: slMsg + "; апаратні RGB-клавіатури вимикаються через комбінацію Fn на клавіатурі",
+	})
 	// Do not write unknown firmware LED registers or undocumented monitor VCP codes.
 	actions = append(actions, LightingAction{Name: "Індикатори ноутбука", Message: "Немає підтвердженого програмного керування"}, LightingAction{Name: "Індикатор монітора", Message: "Вимкніть у System Setup → Power Indicator → OFF"})
 	add("Екрани", SleepDisplays(config.EnableDDCCI))

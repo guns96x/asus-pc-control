@@ -158,3 +158,61 @@ fun KeyboardLevelSelector(
         }
     }
 }
+
+@Composable
+fun PerformanceModeButton(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    isSelected: Boolean,
+    activeColor: Color,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val bg = if (isSelected) activeColor.copy(alpha = 0.20f) else DarkSurfaceElevated
+    val borderCol = if (isSelected) activeColor else DarkBorder
+    val contentCol = if (isSelected) activeColor else TextSecondary
+
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = bg,
+        border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, borderCol),
+        modifier = modifier
+            .height(60.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(enabled = enabled) { onClick() }
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(vertical = 4.dp, horizontal = 2.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = contentCol,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = title,
+                    color = if (isSelected) TextPrimary else TextSecondary,
+                    fontSize = 13.sp,
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                )
+            }
+            Text(
+                text = subtitle,
+                color = if (isSelected) contentCol else TextMuted,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Normal
+            )
+        }
+    }
+}
