@@ -67,6 +67,8 @@ func GetSystemStatus() SystemInfo {
 }
 
 func HibernateSystem() {
+	// Explicit hibernation remains available; the guard only prevents automatic idle sleep.
+	globalKeepAwake.Release()
 	log.Println("[Power] Initiating deep S4 hibernation in 500ms...")
 	go func() {
 		time.Sleep(500 * time.Millisecond)
@@ -75,7 +77,13 @@ func HibernateSystem() {
 			log.Printf("[Power] shutdown /h failed: %v, attempting fallback SetSuspendState...", err)
 			powrprof := syscall.NewLazyDLL("powrprof.dll")
 			procSetSuspendState := powrprof.NewProc("SetSuspendState")
-			procSetSuspendState.Call(1, 0, 0) // Hibernate, Force, DisableWakeEvent
+			ok, _, suspendErr := procSetSuspendState.Call(1, 0, 0) // Hibernate, Force, DisableWakeEvent
+			if ok == 0 {
+				log.Printf("[Power] hibernation failed: %v", suspendErr)
+				if err := globalKeepAwake.Acquire(); err != nil {
+					log.Print(err)
+				}
+			}
 		}
 	}()
 }

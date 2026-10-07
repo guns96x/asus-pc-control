@@ -1,5 +1,7 @@
 # ASUS PC Remote Control (Android & Tailscale / LAN)
 
+Screen-off no longer invokes Windows Modern Standby: [2026-10-06 fix and live test](docs/screen-off-no-standby-2026-10-06.md). The laptop panel is blanked with minimum brightness; Windows stays active.
+
 Current build: **1.2.0 (code 7)**, package `com.hermes.pccontrol`. The APK keeps the existing signing certificate.
 
 Fresh build, API and emulator verification: [completion report](docs/project-completion-2026-10-02.md).

@@ -251,6 +251,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
+	if err := globalKeepAwake.Acquire(); err != nil {
+		log.Fatalf("Failed to keep remote control available: %v", err)
+	}
+	defer globalKeepAwake.Release()
 
 	http.HandleFunc("/api/status", authMiddleware(handleStatus))
 	http.HandleFunc("/api/performance", authMiddleware(func(w http.ResponseWriter, r *http.Request) {

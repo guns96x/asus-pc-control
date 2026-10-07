@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -140,11 +139,19 @@ func commandDisplays(sleep, useDdc bool) error {
 	if !activeConsoleSession() {
 		return errors.New("Агент працює поза фізичною сесією ASUS. Увійдіть у Windows на ноуті без RDP")
 	}
-	if !sleep {
-		kernel32.NewProc("SetThreadExecutionState").Call(3)
-		var result uintptr
-		user32.NewProc("SendMessageTimeoutW").Call(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, ^uintptr(0), 2, 100, uintptr(unsafe.Pointer(&result)))
-		time.Sleep(150 * time.Millisecond)
+	// Assert both requests before any screen command. Keep them after wake as well:
+	// Windows can turn displays off independently of the last command sent by this app.
+	if err := globalKeepAwake.RequireDisplay(); err != nil {
+		return fmt.Errorf("Не вдалося захистити віддалений доступ від сну: %w", err)
+	}
+	if sleep {
+		if err := ShowBlankScreen(); err != nil {
+			if !requestedMonitorSleeping {
+				globalKeepAwake.ReleaseDisplay()
+			}
+			return err
+		}
+		dimLaptopPanel()
 	}
 	if useDdc {
 		_ = visitPhysicalMonitors(func(m PhysicalMonitor) {
@@ -170,24 +177,14 @@ func commandDisplays(sleep, useDdc bool) error {
 			}
 		})
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	value := ^uintptr(0)
-	if sleep {
-		value = 2
-		_ = globalKeepAwake.Acquire()
-	} else {
-		globalKeepAwake.Release()
-		kernel32.NewProc("SetThreadExecutionState").Call(3)
-	}
-	var result uintptr
-	// ABORTIFHUNG and a bounded per-window timeout replace the unbounded SendMessage.
-	ok, _, err := user32.NewProc("SendMessageTimeoutW").Call(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, value, 2, 100, uintptr(unsafe.Pointer(&result)))
-	if ok == 0 {
-		if sleep {
-			globalKeepAwake.Release()
+	// SC_MONITORPOWER enters Modern Standby on this laptop. Keep the Windows
+	// display logically on and blank it instead; external panels use hardware DDC.
+	if !sleep {
+		if err := HideBlankScreen(); err != nil {
+			return err
 		}
-		return fmt.Errorf("Windows не підтвердила прийняття команди екранам: %w", err)
+		restoreLaptopPanel()
+		globalKeepAwake.ReleaseDisplay()
 	}
 	requestedMonitorSleeping = sleep
 	return nil
