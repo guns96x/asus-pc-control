@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity() {
                     databaseEnabled = true
                     useWideViewPort = true
                     loadWithOverviewMode = true
-                    cacheMode = WebSettings.LOAD_DEFAULT
+                    cacheMode = WebSettings.LOAD_NO_CACHE
                     allowFileAccess = true
                     mediaPlaybackRequiresUserGesture = false
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -96,6 +96,7 @@ class MainActivity : ComponentActivity() {
                         userAgentString = "$ua TaskManagerApp/2.0"
                     } catch (_: Exception) {}
                 }
+                clearCache(true)
                 setLayerType(View.LAYER_TYPE_HARDWARE, null)
                 isVerticalScrollBarEnabled = false
                 isHorizontalScrollBarEnabled = false
@@ -366,42 +367,47 @@ class MainActivity : ComponentActivity() {
             .show()
     }
 
-    private fun triggerWakeOnLan() {
+    private fun triggerWakeOnLan(preferredMethod: String = "both") {
         val config = appPrefs.loadConfig()
         errorText.text = "Відправка Wake-on-LAN сигналу..."
         progressBar.visibility = View.VISIBLE
 
         lifecycleScope.launch(Dispatchers.IO) {
+            var directStatus = "Пропущено"
+            var mikrotikRes = "Пропущено"
+
             // 1. Direct UDP Magic Packet (broadcast to local subnets / 255.255.255.255)
-            val directRes = WolManager.sendMagicPacket(config.pcMac)
+            if (preferredMethod == "direct" || preferredMethod == "both" || preferredMethod == "mikrotik") {
+                val directRes = WolManager.sendMagicPacket(config.pcMac)
+                directStatus = if (directRes.isSuccess) "OK (UDP 9)" else (directRes.exceptionOrNull()?.message ?: "Помилка")
+            }
 
             // 2. MikroTik REST WOL
-            var mikrotikRes = "Вимкнено"
-            if (config.mikrotikHost.isNotBlank()) {
-                val m1 = MikrotikClient.sendWol(config)
-                if (m1.isSuccess) {
-                    mikrotikRes = "Успішно (${config.mikrotikHost})"
-                } else {
-                    // Try alternate host (e.g. switch between 100.95.32.60 and 192.168.80.1)
-                    val altHost = if (config.mikrotikHost.startsWith("100.")) "192.168.80.1" else "100.95.32.60"
-                    val altConfig = config.copy(mikrotikHost = altHost)
-                    val m2 = MikrotikClient.sendWol(altConfig)
-                    mikrotikRes = if (m2.isSuccess) {
-                        "Успішно ($altHost)"
+            if (preferredMethod == "mikrotik" || preferredMethod == "both") {
+                if (config.mikrotikHost.isNotBlank()) {
+                    val m1 = MikrotikClient.sendWol(config)
+                    if (m1.isSuccess) {
+                        mikrotikRes = "Успішно (${config.mikrotikHost})"
                     } else {
-                        m1.exceptionOrNull()?.message ?: "Помилка зв'язку"
+                        val altHost = if (config.mikrotikHost.startsWith("100.")) "192.168.80.1" else "100.95.32.60"
+                        val altConfig = config.copy(mikrotikHost = altHost)
+                        val m2 = MikrotikClient.sendWol(altConfig)
+                        mikrotikRes = if (m2.isSuccess) {
+                            "Успішно ($altHost)"
+                        } else {
+                            m1.exceptionOrNull()?.message ?: "Помилка зв'язку"
+                        }
                     }
                 }
             }
 
             withContext(Dispatchers.Main) {
                 progressBar.visibility = View.GONE
-                val directStatus = if (directRes.isSuccess) "OK" else (directRes.exceptionOrNull()?.message ?: "Помилка")
                 errorText.text = "📡 Сигнал Wake-on-LAN надіслано!\n\n" +
                         "• Прямий UDP: $directStatus\n" +
                         "• MikroTik: $mikrotikRes\n\n" +
                         "Очікування завантаження комп'ютера..."
-                Toast.makeText(this@MainActivity, "WOL надіслано! Очікування ПК...", Toast.LENGTH_LONG).show()
+                Toast.makeText(this@MainActivity, "WOL надіслано: MikroTik [$mikrotikRes], UDP [$directStatus]", Toast.LENGTH_LONG).show()
                 startAggressiveAutoRetry()
             }
         }
@@ -524,6 +530,7 @@ class MainActivity : ComponentActivity() {
                 errorLayout.visibility = View.GONE
                 webView.visibility = View.VISIBLE
                 stopAutoRetry()
+                syncServerConfig()
             }
 
             override fun onReceivedError(
@@ -578,6 +585,97 @@ class MainActivity : ComponentActivity() {
             } catch (_: Exception) {
                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
                 startActivity(intent)
+            }
+        }
+
+        // Expose Native Android WOL Bridge to Web UI
+        webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
+    }
+
+    private fun syncServerConfig() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                val url = URL("${getServerUrl()}/api/system")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.connectTimeout = 2000
+                conn.readTimeout = 2000
+                conn.requestMethod = "GET"
+                if (conn.responseCode == 200) {
+                    val stream = conn.inputStream.bufferedReader().use { it.readText() }
+                    val json = org.json.JSONObject(stream)
+                    val mac = json.optString("mac_address", "")
+                    val mikrotikTs = json.optString("mikrotik_tailscale_ip", "")
+                    val currentCfg = appPrefs.loadConfig()
+                    var changed = false
+                    var newCfg = currentCfg
+                    if (mac.isNotBlank() && currentCfg.pcMac != mac) {
+                        newCfg = newCfg.copy(pcMac = mac)
+                        changed = true
+                    }
+                    if (currentCfg.mikrotikHost.isBlank() && mikrotikTs.isNotBlank()) {
+                        newCfg = newCfg.copy(mikrotikHost = mikrotikTs)
+                        changed = true
+                    }
+                    if (changed) {
+                        appPrefs.saveConfig(newCfg)
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Exception) {}
+        }
+    }
+
+    inner class AndroidBridge {
+        @JavascriptInterface
+        fun triggerWol(method: String = "both") {
+            runOnUiThread {
+                triggerWakeOnLan(method)
+            }
+        }
+
+        @JavascriptInterface
+        fun showWolConfig() {
+            runOnUiThread {
+                showWolSettingsDialog()
+            }
+        }
+
+        @JavascriptInterface
+        fun getWolConfigJson(): String {
+            val cfg = appPrefs.loadConfig()
+            val obj = org.json.JSONObject().apply {
+                put("pcMac", cfg.pcMac)
+                put("mikrotikHost", cfg.mikrotikHost)
+                put("mikrotikPort", cfg.mikrotikPort)
+                put("mikrotikUser", cfg.mikrotikUser)
+                put("mikrotikPass", cfg.mikrotikPass)
+                put("mikrotikInterface", cfg.mikrotikInterface)
+                put("mikrotikUseHttps", cfg.mikrotikUseHttps)
+            }
+            return obj.toString()
+        }
+
+        @JavascriptInterface
+        fun saveWolConfigJson(jsonStr: String): Boolean {
+            return try {
+                val obj = org.json.JSONObject(jsonStr)
+                val cur = appPrefs.loadConfig()
+                val updated = cur.copy(
+                    pcMac = obj.optString("mac", cur.pcMac),
+                    mikrotikHost = obj.optString("host", cur.mikrotikHost),
+                    mikrotikPort = obj.optInt("port", cur.mikrotikPort),
+                    mikrotikUser = obj.optString("user", cur.mikrotikUser),
+                    mikrotikPass = obj.optString("pass", cur.mikrotikPass),
+                    mikrotikInterface = obj.optString("iface", cur.mikrotikInterface),
+                    mikrotikUseHttps = obj.optBoolean("https", cur.mikrotikUseHttps)
+                )
+                appPrefs.saveConfig(updated)
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "WOL збережено в налаштуваннях!", Toast.LENGTH_SHORT).show()
+                }
+                true
+            } catch (e: Exception) {
+                false
             }
         }
     }
