@@ -22,6 +22,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.lifecycleScope
+import com.hermes.pccontrol.data.AppPreferences
+import com.hermes.pccontrol.network.MikrotikClient
+import com.hermes.pccontrol.network.WolManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.PrintWriter
 import java.io.StringWriter
 import java.net.HttpURLConnection
@@ -30,6 +37,7 @@ import kotlin.concurrent.thread
 
 class MainActivity : ComponentActivity() {
 
+    private lateinit var appPrefs: AppPreferences
     private lateinit var webView: WebView
     private lateinit var errorLayout: LinearLayout
     private lateinit var errorText: TextView
@@ -46,6 +54,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         try {
+            appPrefs = AppPreferences(this)
             // Dark Status Bar & Navigation Bar
             window.statusBarColor = Color.parseColor("#181818")
             window.navigationBarColor = Color.parseColor("#181818")
@@ -141,23 +150,51 @@ class MainActivity : ComponentActivity() {
                 setPadding(0, 0, 0, 36)
             }
 
+            val wolBtn = Button(this).apply {
+                text = "⚡ Ввімкнути ПК (Wake-on-LAN)"
+                setBackgroundColor(Color.parseColor("#107c41"))
+                setTextColor(Color.WHITE)
+                setTypeface(null, Typeface.BOLD)
+                textSize = 15f
+                setPadding(36, 18, 36, 18)
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    bottomMargin = 24
+                }
+                setOnClickListener {
+                    triggerWakeOnLan()
+                }
+            }
+
             val retryBtn = Button(this).apply {
-                text = "Повторити спробу"
+                text = "Повторити"
                 setBackgroundColor(Color.parseColor("#0078d4"))
                 setTextColor(Color.WHITE)
-                setPadding(32, 16, 32, 16)
+                setPadding(24, 16, 24, 16)
                 setOnClickListener {
                     retryLoading()
                 }
             }
 
             val changeUrlBtn = Button(this).apply {
-                text = "Змінити IP"
+                text = "IP сервера"
                 setBackgroundColor(Color.parseColor("#272727"))
                 setTextColor(Color.parseColor("#60cdff"))
-                setPadding(32, 16, 32, 16)
+                setPadding(24, 16, 24, 16)
                 setOnClickListener {
                     showChangeUrlDialog()
+                }
+            }
+
+            val wolSettingsBtn = Button(this).apply {
+                text = "WOL ⚙️"
+                setBackgroundColor(Color.parseColor("#272727"))
+                setTextColor(Color.parseColor("#e0e0e0"))
+                setPadding(24, 16, 24, 16)
+                setOnClickListener {
+                    showWolSettingsDialog()
                 }
             }
 
@@ -165,16 +202,16 @@ class MainActivity : ComponentActivity() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER
                 addView(retryBtn)
-                val spacer = View(this@MainActivity).apply {
-                    layoutParams = LinearLayout.LayoutParams(24, 1)
-                }
-                addView(spacer)
+                addView(View(this@MainActivity).apply { layoutParams = LinearLayout.LayoutParams(16, 1) })
                 addView(changeUrlBtn)
+                addView(View(this@MainActivity).apply { layoutParams = LinearLayout.LayoutParams(16, 1) })
+                addView(wolSettingsBtn)
             }
 
             errorLayout.addView(errIcon)
             errorLayout.addView(errTitle)
             errorLayout.addView(errorText)
+            errorLayout.addView(wolBtn)
             errorLayout.addView(btnRow)
 
             root.addView(webView)
@@ -324,6 +361,148 @@ class MainActivity : ComponentActivity() {
                     saveServerUrl(newUrl)
                     retryLoading()
                 }
+            }
+            .setNegativeButton("Скасувати", null)
+            .show()
+    }
+
+    private fun triggerWakeOnLan() {
+        val config = appPrefs.loadConfig()
+        errorText.text = "Відправка Wake-on-LAN сигналу..."
+        progressBar.visibility = View.VISIBLE
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            // 1. Direct UDP Magic Packet (broadcast to local subnets / 255.255.255.255)
+            val directRes = WolManager.sendMagicPacket(config.pcMac)
+
+            // 2. MikroTik REST WOL
+            var mikrotikRes = "Вимкнено"
+            if (config.mikrotikHost.isNotBlank()) {
+                val m1 = MikrotikClient.sendWol(config)
+                if (m1.isSuccess) {
+                    mikrotikRes = "Успішно (${config.mikrotikHost})"
+                } else {
+                    // Try alternate host (e.g. switch between 100.95.32.60 and 192.168.80.1)
+                    val altHost = if (config.mikrotikHost.startsWith("100.")) "192.168.80.1" else "100.95.32.60"
+                    val altConfig = config.copy(mikrotikHost = altHost)
+                    val m2 = MikrotikClient.sendWol(altConfig)
+                    mikrotikRes = if (m2.isSuccess) {
+                        "Успішно ($altHost)"
+                    } else {
+                        m1.exceptionOrNull()?.message ?: "Помилка зв'язку"
+                    }
+                }
+            }
+
+            withContext(Dispatchers.Main) {
+                progressBar.visibility = View.GONE
+                val directStatus = if (directRes.isSuccess) "OK" else (directRes.exceptionOrNull()?.message ?: "Помилка")
+                errorText.text = "📡 Сигнал Wake-on-LAN надіслано!\n\n" +
+                        "• Прямий UDP: $directStatus\n" +
+                        "• MikroTik: $mikrotikRes\n\n" +
+                        "Очікування завантаження комп'ютера..."
+                Toast.makeText(this@MainActivity, "WOL надіслано! Очікування ПК...", Toast.LENGTH_LONG).show()
+                startAggressiveAutoRetry()
+            }
+        }
+    }
+
+    private fun startAggressiveAutoRetry() {
+        stopAutoRetry()
+        var attempts = 0
+        autoRetryRunnable = object : Runnable {
+            override fun run() {
+                if (!isErrorShowing) return
+                attempts++
+                thread {
+                    var reachable = false
+                    try {
+                        val url = URL("${getServerUrl()}/api/system")
+                        val conn = url.openConnection() as HttpURLConnection
+                        conn.connectTimeout = 1200
+                        conn.readTimeout = 1200
+                        conn.requestMethod = "GET"
+                        reachable = (conn.responseCode == 200)
+                        conn.disconnect()
+                    } catch (_: Exception) {
+                        reachable = false
+                    }
+                    if (reachable) {
+                        runOnUiThread {
+                            if (isErrorShowing) {
+                                retryLoading()
+                            }
+                        }
+                    } else {
+                        val delay = if (attempts < 20) 1500L else 3000L
+                        autoRetryHandler.postDelayed(this, delay)
+                    }
+                }
+            }
+        }
+        autoRetryHandler.postDelayed(autoRetryRunnable!!, 1000)
+    }
+
+    private fun showWolSettingsDialog() {
+        val config = appPrefs.loadConfig()
+        val scroll = ScrollView(this)
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 20, 40, 20)
+        }
+
+        fun createField(label: String, initialValue: String): Pair<TextView, EditText> {
+            val lbl = TextView(this).apply {
+                text = label
+                textSize = 12f
+                setTextColor(Color.GRAY)
+                setPadding(0, 16, 0, 4)
+            }
+            val edit = EditText(this).apply {
+                setText(initialValue)
+                setTextColor(Color.BLACK)
+                textSize = 14f
+            }
+            form.addView(lbl)
+            form.addView(edit)
+            return Pair(lbl, edit)
+        }
+
+        val (_, macInput) = createField("MAC-адреса комп'ютера (ASUS TUF)", config.pcMac)
+        val (_, hostInput) = createField("Хост MikroTik (Tailscale IP або LAN)", config.mikrotikHost)
+        val (_, portInput) = createField("Порт MikroTik REST API", config.mikrotikPort.toString())
+        val (_, userInput) = createField("Користувач MikroTik", config.mikrotikUser)
+        val (_, passInput) = createField("Пароль MikroTik", config.mikrotikPass)
+        val (_, ifaceInput) = createField("Інтерфейс MikroTik", config.mikrotikInterface)
+
+        val httpsCheck = CheckBox(this).apply {
+            text = "Використовувати HTTPS (SSL)"
+            isChecked = config.mikrotikUseHttps
+            setTextColor(Color.DKGRAY)
+            setPadding(0, 16, 0, 16)
+        }
+        form.addView(httpsCheck)
+
+        scroll.addView(form)
+
+        AlertDialog.Builder(this)
+            .setTitle("⚡ Налаштування Wake-on-LAN")
+            .setView(scroll)
+            .setPositiveButton("Зберегти") { _, _ ->
+                val newConfig = config.copy(
+                    pcMac = macInput.text.toString().trim(),
+                    mikrotikHost = hostInput.text.toString().trim(),
+                    mikrotikPort = portInput.text.toString().trim().toIntOrNull() ?: 80,
+                    mikrotikUseHttps = httpsCheck.isChecked,
+                    mikrotikUser = userInput.text.toString().trim(),
+                    mikrotikPass = passInput.text.toString(),
+                    mikrotikInterface = ifaceInput.text.toString().trim()
+                )
+                appPrefs.saveConfig(newConfig)
+                Toast.makeText(this, "Налаштування WOL збережено!", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("Тест WOL") { _, _ ->
+                triggerWakeOnLan()
             }
             .setNegativeButton("Скасувати", null)
             .show()
