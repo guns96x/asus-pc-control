@@ -7,6 +7,7 @@ data class AppConfig(
     val pcHost: String = "192.168.80.200",
     val pcFallbackHost: String = "100.82.252.86",
     val pcPort: Int = 8765,
+    val taskManagerPort: Int = 8899,
     val authToken: String = "3f0f6c5206aafe05231c8c97034cd2cb",
     val pcMac: String = "E8:9C:25:4C:4C:CA",
     val mikrotikHost: String = "192.168.80.1",
@@ -45,6 +46,7 @@ class AppPreferences(context: Context) {
             pcHost = prefs.getString("pc_host", "192.168.80.200") ?: "192.168.80.200",
             pcFallbackHost = prefs.getString("pc_fallback_host", "100.82.252.86") ?: "100.82.252.86",
             pcPort = prefs.getInt("pc_port", 8765),
+            taskManagerPort = prefs.getInt("task_manager_port", 8899),
             authToken = prefs.getString("auth_token", "3f0f6c5206aafe05231c8c97034cd2cb") ?: "3f0f6c5206aafe05231c8c97034cd2cb",
             pcMac = prefs.getString("pc_mac", "E8:9C:25:4C:4C:CA") ?: "E8:9C:25:4C:4C:CA",
             mikrotikHost = prefs.getString("mikrotik_host", "192.168.80.1") ?: "192.168.80.1",
@@ -61,6 +63,7 @@ class AppPreferences(context: Context) {
             .putString("pc_host", config.pcHost.trim())
             .putString("pc_fallback_host", config.pcFallbackHost.trim())
             .putInt("pc_port", config.pcPort)
+            .putInt("task_manager_port", config.taskManagerPort)
             .putString("auth_token", config.authToken.trim())
             .putString("pc_mac", config.pcMac.trim().uppercase())
             .putString("mikrotik_host", config.mikrotikHost.trim())

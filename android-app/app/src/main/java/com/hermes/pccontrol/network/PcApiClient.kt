@@ -34,6 +34,52 @@ data class LightingCapabilities(
     val message: String = ""
 )
 
+data class TaskMetrics(
+    val cpuTotal: Float = 0f,
+    val cpuTempC: Int = 0,
+    val cpuFanRpm: Int = 0,
+    val cpuFreqGhz: Float = 0f,
+    val cpuModel: String = "Intel Core i5-12500H",
+    val coresLogical: Int = 16,
+    val coresPhysical: Int = 12,
+    val uptimeSec: Long = 0L,
+    val processesCount: Int = 0,
+    val threadsCount: Int = 0,
+    val handlesCount: Int = 0,
+    val ramPercent: Float = 0f,
+    val ramUsedGb: Float = 0f,
+    val ramTotalGb: Float = 0f,
+    val ramAvailGb: Float = 0f,
+    val diskReadMb: Float = 0f,
+    val diskWriteMb: Float = 0f,
+    val netRecvKbps: Float = 0f,
+    val netSentKbps: Float = 0f,
+    val netRecvMbps: Float = 0f,
+    val netSentMbps: Float = 0f,
+    val gpuName: String = "NVIDIA GeForce RTX 3050 Laptop GPU",
+    val gpuLoad: Float = 0f,
+    val gpuTempC: Int = 0,
+    val gpuFanRpm: Int = 0,
+    val gpuVramUsedMb: Float = 0f,
+    val gpuVramTotalMb: Float = 4096f,
+    val cpuHistory: List<Float> = emptyList(),
+    val ramHistory: List<Float> = emptyList(),
+    val gpuHistory: List<Float> = emptyList()
+)
+
+data class ProcessItem(
+    val pid: Int,
+    val name: String,
+    val cpu: Float,
+    val memoryMb: Float,
+    val memoryPercent: Float,
+    val diskMbps: Float,
+    val category: String,
+    val isCritical: Boolean,
+    val exe: String,
+    val username: String
+)
+
 class PcApiClient(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(3, TimeUnit.SECONDS)
@@ -244,5 +290,137 @@ class PcApiClient(
         return callWithFallback(config, "/api/power/hibernate", "POST") { _, _, _ ->
             true
         }
+    }
+
+    private fun executeCustomPort(host: String, port: Int, path: String, method: String = "GET", body: String? = null): Response {
+        val url = "http://$host:$port$path"
+        val builder = Request.Builder()
+            .url(url)
+            .header("Content-Type", "application/json")
+        if (method == "POST") {
+            val reqBody = (body ?: "{}").toRequestBody("application/json".toMediaType())
+            builder.post(reqBody)
+        } else {
+            builder.get()
+        }
+        return client.newCall(builder.build()).execute()
+    }
+
+    suspend fun getTaskMetrics(config: AppConfig): Result<TaskMetrics> = withContext(Dispatchers.IO) {
+        val candidates = getCandidates(config)
+        var lastErr: Exception? = null
+        for (host in candidates) {
+            try {
+                executeCustomPort(host, config.taskManagerPort, "/api/system").use { resp ->
+                    if (resp.isSuccessful) {
+                        val json = JSONObject(resp.body?.string().orEmpty())
+                        val cpu = json.optJSONObject("cpu") ?: JSONObject()
+                        val mem = json.optJSONObject("memory") ?: JSONObject()
+                        val disk = json.optJSONObject("disk") ?: JSONObject()
+                        val net = json.optJSONObject("network") ?: JSONObject()
+                        val gpu = json.optJSONObject("gpu") ?: JSONObject()
+
+                        val metrics = TaskMetrics(
+                            cpuTotal = cpu.optDouble("total", 0.0).toFloat(),
+                            cpuTempC = cpu.optInt("temp_c", 0),
+                            cpuFanRpm = cpu.optInt("fan_rpm", 0),
+                            cpuFreqGhz = cpu.optDouble("freq_ghz", 0.0).toFloat(),
+                            cpuModel = cpu.optString("model", "Intel Core i5-12500H"),
+                            coresLogical = cpu.optInt("cores_logical", 16),
+                            coresPhysical = cpu.optInt("cores_physical", 12),
+                            uptimeSec = cpu.optLong("uptime_sec", 0L),
+                            processesCount = cpu.optInt("processes_count", 0),
+                            threadsCount = cpu.optInt("threads_count", 0),
+                            handlesCount = cpu.optInt("handles_count", 0),
+                            ramPercent = mem.optDouble("percent", 0.0).toFloat(),
+                            ramUsedGb = mem.optDouble("used_gb", 0.0).toFloat(),
+                            ramTotalGb = mem.optDouble("total_gb", 0.0).toFloat(),
+                            ramAvailGb = mem.optDouble("available_gb", 0.0).toFloat(),
+                            diskReadMb = disk.optDouble("read_speed_mb", 0.0).toFloat(),
+                            diskWriteMb = disk.optDouble("write_speed_mb", 0.0).toFloat(),
+                            netRecvKbps = net.optDouble("kbps_recv", 0.0).toFloat(),
+                            netSentKbps = net.optDouble("kbps_sent", 0.0).toFloat(),
+                            netRecvMbps = net.optDouble("mbps_recv", 0.0).toFloat(),
+                            netSentMbps = net.optDouble("mbps_sent", 0.0).toFloat(),
+                            gpuName = gpu.optString("name", "NVIDIA GeForce RTX 3050 Laptop GPU"),
+                            gpuLoad = gpu.optDouble("load", 0.0).toFloat(),
+                            gpuTempC = gpu.optInt("temp_c", 0),
+                            gpuFanRpm = gpu.optInt("fan_rpm", 0),
+                            gpuVramUsedMb = gpu.optDouble("memory_used_mb", 0.0).toFloat(),
+                            gpuVramTotalMb = gpu.optDouble("memory_total_mb", 4096.0).toFloat()
+                        )
+                        return@withContext Result.success(metrics)
+                    }
+                }
+            } catch (e: Exception) {
+                lastErr = e
+            }
+        }
+        Result.failure(lastErr ?: Exception("Не вдалося отримати метрики диспетчера"))
+    }
+
+    suspend fun getProcesses(
+        config: AppConfig,
+        search: String = "",
+        category: String = "all",
+        sortBy: String = "cpu"
+    ): Result<List<ProcessItem>> = withContext(Dispatchers.IO) {
+        val candidates = getCandidates(config)
+        var lastErr: Exception? = null
+        val encodedSearch = java.net.URLEncoder.encode(search, "UTF-8")
+        val path = "/api/processes?search=$encodedSearch&category=$category&sort_by=$sortBy&limit=250"
+        for (host in candidates) {
+            try {
+                executeCustomPort(host, config.taskManagerPort, path).use { resp ->
+                    if (resp.isSuccessful) {
+                        val json = JSONObject(resp.body?.string().orEmpty())
+                        val arr = json.optJSONArray("processes") ?: org.json.JSONArray()
+                        val list = mutableListOf<ProcessItem>()
+                        for (i in 0 until arr.length()) {
+                            val o = arr.getJSONObject(i)
+                            list.add(
+                                ProcessItem(
+                                    pid = o.getInt("pid"),
+                                    name = o.optString("name", ""),
+                                    cpu = o.optDouble("cpu", 0.0).toFloat(),
+                                    memoryMb = o.optDouble("memory_mb", 0.0).toFloat(),
+                                    memoryPercent = o.optDouble("memory_percent", 0.0).toFloat(),
+                                    diskMbps = o.optDouble("disk_mbps", 0.0).toFloat(),
+                                    category = o.optString("category", "background"),
+                                    isCritical = o.optBoolean("is_critical", false),
+                                    exe = o.optString("exe", ""),
+                                    username = o.optString("username", "")
+                                )
+                            )
+                        }
+                        return@withContext Result.success(list)
+                    }
+                }
+            } catch (e: Exception) {
+                lastErr = e
+            }
+        }
+        Result.failure(lastErr ?: Exception("Не вдалося отримати процеси"))
+    }
+
+    suspend fun killProcess(config: AppConfig, pid: Int): Result<String> = withContext(Dispatchers.IO) {
+        val candidates = getCandidates(config)
+        for (host in candidates) {
+            try {
+                executeCustomPort(host, config.taskManagerPort, "/api/process/$pid/kill", "POST").use { resp ->
+                    val bodyStr = resp.body?.string().orEmpty()
+                    val json = if (bodyStr.isNotBlank()) JSONObject(bodyStr) else JSONObject()
+                    if (resp.isSuccessful && json.optBoolean("success", true)) {
+                        return@withContext Result.success(json.optString("message", "Процес $pid завершено"))
+                    } else {
+                        val err = json.optString("detail", json.optString("error", "Помилка"))
+                        return@withContext Result.failure(Exception(err))
+                    }
+                }
+            } catch (e: Exception) {
+                return@withContext Result.failure(e)
+            }
+        }
+        Result.failure(Exception("Не вдалося завершити процес"))
     }
 }
